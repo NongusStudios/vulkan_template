@@ -66,9 +66,13 @@ Vk_State :: struct {
     swapchain: Swapchain,
     frames:    [FRAME_OVERLAP]Frame_Data,
     current_frame: u32,
-
-    viewport: Image,
-    viewport_extent: vk.Extent2D,
+    
+    // Each frame is drawn onto this before being copied to the current swapchain image
+    viewport: struct {
+        color_attachment: Image,
+        //depth_attachment: Image,
+        extent: vk.Extent2D,
+    },
 
     vkb: struct {
         instance:        ^vkb.Instance,
@@ -134,7 +138,7 @@ start_frame :: proc(clear_color: ^vk.ClearColorValue) -> (frame: ^Frame_Data, ok
 
     cmd_transition_image(
         cmd,
-        self.viewport.image,
+        self.viewport.color_attachment.image,
         .UNDEFINED,
         .GENERAL
     )
@@ -143,7 +147,7 @@ start_frame :: proc(clear_color: ^vk.ClearColorValue) -> (frame: ^Frame_Data, ok
     clear_range := image_subresource_range({.COLOR})
     vk.CmdClearColorImage(
         cmd,
-        self.viewport.image,
+        self.viewport.color_attachment.image,
         .GENERAL,
         clear_color,
         1,
@@ -158,7 +162,7 @@ end_frame :: proc(frame: ^Frame_Data) {
 
     cmd_transition_image(
         cmd,
-        self.viewport.image,
+        self.viewport.color_attachment.image,
         .GENERAL,
         .TRANSFER_SRC_OPTIMAL,
     )
@@ -172,9 +176,9 @@ end_frame :: proc(frame: ^Frame_Data) {
 
     // Transition current swapchain image into present mode
     cmd_copy_image(cmd,
-        self.viewport.image,
+        self.viewport.color_attachment.image,
         self.swapchain.images[frame.image_index],
-        self.viewport_extent,
+        self.viewport.extent,
         self.swapchain.extent,
         {.COLOR}
     )
@@ -398,15 +402,33 @@ init_swapchain :: proc() -> (ok: bool) {
     extent := get_window_extent()
     create_swapchain(extent) or_return
     
+    display_count: i32 = 0
+    display_ids := sdl.GetDisplays(&display_count)
+    
+    // Get dimension of largest display
     bounds: sdl.Rect
-    display_id := sdl.GetDisplayForWindow(get_app().window)
-    sdl.GetDisplayBounds(display_id, &bounds) 
+    max_w: i32 = 0
+    max_h: i32 = 0
+    for i in 0..<display_count {
+        sdl.GetDisplayBounds(display_ids[i], &bounds)
+        
+        if bounds.w > max_w {
+            max_w = bounds.w
+        }
 
-    self.viewport = create_image(
+        if bounds.h > max_h {
+            max_h = bounds.h
+        }
+    }
+
+    // Setup viewport
+    // viewport images share the same size as the largest monitor on the users computer, so it doesn't need
+    // to be recreated when the window is resized.
+    self.viewport.color_attachment = create_image(
         .R16G16B16A16_SFLOAT,
         {
-            width = u32(bounds.w),
-            height = u32(bounds.h),
+            width = u32(max_w),
+            height = u32(max_h),
             depth = 1
         },
         {
@@ -418,20 +440,19 @@ init_swapchain :: proc() -> (ok: bool) {
         .D2, {.COLOR},
         allocation_create_info(.Gpu_Only, { .DEVICE_LOCAL })
     ) or_return
-    track_resource(self.viewport)
+    track_resource(self.viewport.color_attachment)
 
-    self.viewport_extent = extent
+    self.viewport.extent = extent
 
     return true
 }
 
 resize_swapchain :: proc() -> (ok: bool) {
-    log.infof("Swapchain resized to %v", self.viewport_extent)
-
     vk_check(vk.DeviceWaitIdle(self.device)) or_return
 
     new_extent := get_window_extent()
-    self.viewport_extent = new_extent
+    self.viewport.extent = new_extent
+    log.infof("Swapchain resized to %v", self.viewport.extent)
 
     create_swapchain(new_extent) or_return
 

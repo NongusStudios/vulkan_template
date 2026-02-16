@@ -1,6 +1,9 @@
 DBG_FLAGS = -debug -o:minimal -out:bin/debug/a.out
 FLAGS = -o:speed -out:bin/release/a.out
 
+SHADER_SRC = $(wildcard shaders/src/*.slang)
+SPIR_V = $(SHADER_SRC:shaders/src/%.slang=shaders/%.spv)
+
 .PHONY: all
 
 all: build
@@ -10,10 +13,10 @@ bin/debug:
 bin/release:
 	mkdir -p bin/release	
 
-build: vma imgui bin/debug
+build: vma imgui bin/debug $(SPIR_V)
 	odin build src $(DBG_FLAGS)
 
-release: vma imgui bin/release
+release: vma imgui bin/release $(SPIR_V)
 	odin build src $(FLAGS)
 
 run: build
@@ -35,3 +38,7 @@ lib/imgui/libimgui_linux_x64.a:
 
 vma: lib/vma/libvma_linux_x86_64.a
 imgui: lib/imgui/libimgui_linux_x64.a
+
+# Compile Shaders
+shaders/%.spv: shaders/src/%.slang
+	slangc $< -entry main -profile glsl_450 -target spirv -o $@

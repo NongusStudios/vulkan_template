@@ -7,7 +7,6 @@ import "base:runtime"
 import "core:log"
 
 // Vendor
-import sdl "vendor:sdl3"
 import vk "vendor:vulkan"
 import vkb "../lib/vkb"
 import vma "../lib/vma"
@@ -46,6 +45,7 @@ Resource :: union {
     // objects
     Image,
     Buffer,
+    Descriptor_Group,
 }
 
 Resource_Tracker :: struct {
@@ -121,6 +121,7 @@ resource_tracker_flush :: proc(self: ^Resource_Tracker) {
         // Objects
         case Image: destroy_image(res)
         case Buffer: destroy_buffer(res)
+        case Descriptor_Group: destroy_descriptor_group(res)
         }
     }
 
@@ -259,20 +260,6 @@ imageview_create_info :: proc(
         subresourceRange = {levelCount = 1, layerCount = 1, aspectMask = aspectFlags},
     }
     return info
-}
-
-buffer_create_info :: proc(
-    size: vk.DeviceSize,
-    usage: vk.BufferUsageFlags,
-    flags := vk.BufferCreateFlags{}
-) -> vk.BufferCreateInfo {
-    return {
-        sType = .BUFFER_CREATE_INFO,
-        size  = size,
-        usage = usage,
-        flags = flags,
-        sharingMode = .EXCLUSIVE,
-    }
 }
 
 allocation_create_info :: proc(

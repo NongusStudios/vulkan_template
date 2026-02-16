@@ -12,6 +12,8 @@ TITLE  : cstring : "vulkan_template"
 App :: struct {
     window:   ^sdl.Window,
     running:   bool,
+    
+    gradient_group: Descriptor_Group,
 }
 
 @(private="file")
@@ -42,10 +44,22 @@ init_app :: proc() -> (ok: bool) {
         return false
     }
     
-    // Maybe?
-    //sdl.ShowWindow(self.window)
-
     init_vulkan() or_return
+    state := get_vk_state()
+
+    // Demo Code
+    desc_builder := create_descriptor_group_builder(); defer destroy_descriptor_group_builder(desc_builder)
+    descriptor_group_builder_add_set(&desc_builder)
+    descriptor_group_builder_add_binding(&desc_builder, .STORAGE_IMAGE, {.COMPUTE})
+    self.gradient_group = descriptor_group_builder_build(&desc_builder) or_return
+    track_resource(self.gradient_group)
+
+    writer := create_descriptor_writer(); defer destroy_descriptor_writer(&writer)
+    descriptor_writer_add_single_image_write(&writer, .STORAGE_IMAGE, {
+        imageView = state.viewport.color_attachment.view,
+        imageLayout = .GENERAL,
+    })
+    descriptor_writer_write_set(&writer, self.gradient_group.sets[0])
 
     self.running = true
     return true
