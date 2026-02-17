@@ -514,6 +514,9 @@ Compute_Pipeline_Builder :: struct {
     delete_code: bool,
 }
 
+/*
+    Compute Pipeline Builder
+*/
 create_compute_pipeline_builder :: proc() -> Compute_Pipeline_Builder {
     return {
         descriptor_layouts = make([dynamic]vk.DescriptorSetLayout),

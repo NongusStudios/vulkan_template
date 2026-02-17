@@ -8,7 +8,7 @@ import vk  "vendor:vulkan"
 import vkb "../lib/vkb"
 import vma "../lib/vma"
 
-PRESENT_MODE  :: vk.PresentModeKHR.FIFO
+PRESENT_MODE  :: vk.PresentModeKHR.FIFO_RELAXED
 FRAME_OVERLAP :: 2
 
 // Vulkan 1.2 features
@@ -69,7 +69,8 @@ Vk_State :: struct {
     graphics:        Queue,
     transfer:        Queue,
     
-    swapchain: Swapchain,
+    swapchain:   Swapchain,
+
     frames:    [FRAME_OVERLAP]Frame_Data,
     current_frame: u32,
     
@@ -134,9 +135,11 @@ start_frame :: proc(clear_color: ^vk.ClearColorValue) -> (frame: ^Frame_Data, ok
         &frame.image_index,
     )
 
-    if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+    if result == .ERROR_OUT_OF_DATE_KHR {
         resize_swapchain() or_return
         return nil, false
+    } else if result != .SUBOPTIMAL_KHR {
+        vk_check(result) or_return
     }
 
     // Start current command buffer
@@ -167,7 +170,7 @@ start_frame :: proc(clear_color: ^vk.ClearColorValue) -> (frame: ^Frame_Data, ok
     return frame, true
 }
 
-end_frame :: proc(frame: ^Frame_Data) {
+present_frame :: proc(frame: ^Frame_Data) {
     cmd := frame.command_buffer  
 
     cmd_transition_image(
@@ -184,7 +187,6 @@ end_frame :: proc(frame: ^Frame_Data) {
         .TRANSFER_DST_OPTIMAL,   // new
     )
 
-    // Transition current swapchain image into present mode
     cmd_copy_image(cmd,
         self.viewport.color_attachment.image,
         self.swapchain.images[frame.image_index],
@@ -195,6 +197,7 @@ end_frame :: proc(frame: ^Frame_Data) {
 
     // TODO: Draw imgui ontop of swapchain image
 
+    // Transition current swapchain image into present mode
     cmd_transition_image(
         cmd,
         self.swapchain.images[frame.image_index],
@@ -224,7 +227,10 @@ end_frame :: proc(frame: ^Frame_Data) {
         pImageIndices      = &frame.image_index,
     }
 
-    vk.QueuePresentKHR(self.graphics.queue, &present_info)  
+    result := vk.QueuePresentKHR(self.graphics.queue, &present_info)  
+    if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+        resize_swapchain()
+    }
 
     self.current_frame += 1
 }
@@ -461,8 +467,10 @@ resize_swapchain :: proc() -> (ok: bool) {
     vk_check(vk.DeviceWaitIdle(self.device)) or_return
 
     new_extent := get_window_extent()
+
     self.viewport.extent = new_extent
-    log.infof("Swapchain resized to %v", self.viewport.extent)
+    self.viewport.extent.width = min(self.viewport.extent.width, self.viewport.color_attachment.extent.width)
+    self.viewport.extent.height = min(self.viewport.extent.height, self.viewport.color_attachment.extent.height)
 
     create_swapchain(new_extent) or_return
 

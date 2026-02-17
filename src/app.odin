@@ -5,13 +5,14 @@ import "core:log"
 import sdl "vendor:sdl3"
 import vk  "vendor:vulkan"
 
-WIDTH  :: 800
-HEIGHT :: 600
+WIDTH  :: 1600
+HEIGHT :: 900
 TITLE  : cstring : "vulkan_template"
 
 App :: struct {
     window:   ^sdl.Window,
     running:   bool,
+    minimized: bool,
     
     gradient_compute: Pipeline,
     gradient_group: Descriptor_Group,
@@ -39,7 +40,7 @@ init_app :: proc() -> (ok: bool) {
         return false
     }
 
-    self.window = sdl.CreateWindow(TITLE, WIDTH, HEIGHT, {.VULKAN, .RESIZABLE})
+    self.window = sdl.CreateWindow(TITLE, WIDTH, HEIGHT, {.VULKAN})
     if self.window == nil {
         log.errorf("failed to create a window:\n%s", sdl.GetError())
         return false
@@ -84,7 +85,9 @@ destroy_app :: proc() {
 
 app_handle_event :: proc(event: sdl.Event) {
     #partial switch event.type {
-        case .QUIT: self.running = false
+    case .QUIT: self.running = false
+    case .WINDOW_MINIMIZED: self.minimized = true
+    case .WINDOW_RESIZED:   resize_swapchain()
     }
 }
 
@@ -92,15 +95,23 @@ app_run :: proc() {
     event: sdl.Event
 
     for self.running {
+        if self.minimized { // If minimized wait for RESTORED event
+            for sdl.WaitEvent(&event) {
+                if event.type == .WINDOW_RESTORED {
+                    resize_swapchain()
+                    self.minimized = false
+                }
+            }
+        }
+
         for sdl.PollEvent(&event) {
             app_handle_event(event)
         }
         
-        flash := abs(math.sin(f32(sdl.GetTicks()) / 1000.0))
         clear_value := vk.ClearColorValue {
-            float32 = {0.0, 0.0, flash, 1.0},
+            float32 = {0.0, 0.0, 0.0, 1.0},
         }
-
+        
         if frame, ok := start_frame(&clear_value); ok {
             cmd := frame.command_buffer
 
@@ -122,11 +133,11 @@ app_run :: proc() {
             // we need to divide by it
             vk.CmdDispatch(
                 cmd,
-                get_window_extent().width  / 16,
-                get_window_extent().height / 16,
+                u32(math.ceil(f32(get_viewport().extent.width)  / 16.)),
+                u32(math.ceil(f32(get_viewport().extent.height)  / 16.)),
                 1,
             )
-            end_frame(frame)
+            present_frame(frame)
         }
     }
 }
