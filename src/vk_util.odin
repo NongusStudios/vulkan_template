@@ -45,6 +45,7 @@ Resource :: union {
     // objects
     Image,
     Buffer,
+    Pipeline,
     Descriptor_Group,
 }
 
@@ -121,6 +122,7 @@ resource_tracker_flush :: proc(self: ^Resource_Tracker) {
         // Objects
         case Image: destroy_image(res)
         case Buffer: destroy_buffer(res)
+        case Pipeline: destroy_pipeline(res) 
         case Descriptor_Group: destroy_descriptor_group(res)
         }
     }

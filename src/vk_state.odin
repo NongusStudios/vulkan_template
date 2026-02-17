@@ -55,6 +55,12 @@ Frame_Data :: struct {
     resource_tracker: Resource_Tracker,
 }
 
+Viewport ::struct {
+    color_attachment: Image,
+    //depth_attachment: Image,
+    extent: vk.Extent2D,
+}
+
 Vk_State :: struct {
     instance:        vk.Instance,
     surface:         vk.SurfaceKHR,
@@ -68,11 +74,7 @@ Vk_State :: struct {
     current_frame: u32,
     
     // Each frame is drawn onto this before being copied to the current swapchain image
-    viewport: struct {
-        color_attachment: Image,
-        //depth_attachment: Image,
-        extent: vk.Extent2D,
-    },
+    viewport: Viewport,
 
     vkb: struct {
         instance:        ^vkb.Instance,
@@ -95,6 +97,14 @@ Vk_State :: struct {
 self: Vk_State
 get_vk_state :: proc() -> ^Vk_State {
     return &self
+}
+
+get_device :: proc() -> vk.Device {
+    return self.device
+}
+
+get_viewport :: proc() -> ^Viewport {
+    return &self.viewport
 }
 
 get_current_frame :: #force_inline proc() -> ^Frame_Data #no_bounds_check {

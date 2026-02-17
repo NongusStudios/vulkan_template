@@ -1,5 +1,7 @@
 package main
 
+import "core:log"
+import "core:os"
 import "core:mem"
 import sa "core:container/small_array"
 
@@ -160,9 +162,9 @@ Descriptor_Group :: struct {
 }
 
 destroy_descriptor_group :: proc(self: Descriptor_Group) {
-    vk.DestroyDescriptorPool(get_vk_state().device, self.pool, nil)
+    vk.DestroyDescriptorPool(get_device(), self.pool, nil)
     for layout in self.layouts {
-        vk.DestroyDescriptorSetLayout(get_vk_state().device, layout, nil)
+        vk.DestroyDescriptorSetLayout(get_device(), layout, nil)
     }
 
     delete(self.sets)
@@ -178,7 +180,7 @@ descriptor_group_allocate_sets :: proc(self: ^Descriptor_Group) -> (ok: bool) {
     }
 
     vk_check(vk.AllocateDescriptorSets(
-        get_vk_state().device,
+        get_device(),
         &alloc_info, raw_data(self.sets[:])
     )) or_return
 
@@ -187,7 +189,7 @@ descriptor_group_allocate_sets :: proc(self: ^Descriptor_Group) -> (ok: bool) {
 
 // Resets and reallocates sets in the group
 descriptor_group_reset :: proc(self: ^Descriptor_Group) -> (ok: bool) {
-    vk.ResetDescriptorPool(get_vk_state().device, self.pool, {})
+    vk.ResetDescriptorPool(get_device(), self.pool, {})
     descriptor_group_allocate_sets(self)
     return true
 }
@@ -202,7 +204,6 @@ Descriptor_Layout_Info :: struct {
 Descriptor_Group_Builder :: struct {
     layout_bindings: [dynamic]Descriptor_Layout_Info,
     pool_sizes: map[vk.DescriptorType]u32,
-    current: int,
     max_sets: u32,
 }
 
@@ -210,7 +211,6 @@ create_descriptor_group_builder :: proc() -> Descriptor_Group_Builder {
     return {
         layout_bindings = make([dynamic]Descriptor_Layout_Info),
         pool_sizes = make(map[vk.DescriptorType]u32),
-        current = -1,
     }
 }
 
@@ -222,7 +222,6 @@ destroy_descriptor_group_builder :: proc(self: Descriptor_Group_Builder) {
 // Adds a new set to the group and makes it the current one to be worked on
 descriptor_group_builder_add_set :: proc(self: ^Descriptor_Group_Builder, layout_flags := vk.DescriptorSetLayoutCreateFlags{}) {
     append(&self.layout_bindings, Descriptor_Layout_Info{ flags = layout_flags })
-    self.current = len(self.layout_bindings)-1
     self.max_sets += 1
 }
 
@@ -232,16 +231,17 @@ descriptor_group_builder_add_binding :: proc(self: ^Descriptor_Group_Builder,
     stage: vk.ShaderStageFlags,
     count: u32 = 1,
 ) {
-    assert(self.current >= 0, "No active set - call descriptor_group_builder_add_set first")
+    current := len(self.layout_bindings)-1
+    assert(current >= 0, "No active set - call descriptor_group_builder_add_set first")
 
-    layout_info := &self.layout_bindings[self.current]
+    layout_info := &self.layout_bindings[current]
     assert(sa.len(layout_info.bindings) < MAX_DESCRIPTOR_LAYOUT_BINDINGS, "Too many bindings in set")
 
     sa.push_back(&layout_info.bindings, vk.DescriptorSetLayoutBinding{
         binding = u32(sa.len(layout_info.bindings)),
         descriptorType = type,
-        descriptorCount = count,
         stageFlags = stage,
+        descriptorCount = count,
     })
 
     self.pool_sizes[type] += count
@@ -262,7 +262,7 @@ descriptor_group_builder_build :: proc(self: ^Descriptor_Group_Builder, pool_fla
         }
 
         vk_check(vk.CreateDescriptorSetLayout(
-            get_vk_state().device, &create_info, nil, &group.layouts[i]
+            get_device(), &create_info, nil, &group.layouts[i]
         )) or_return
     }
 
@@ -286,7 +286,7 @@ descriptor_group_builder_build :: proc(self: ^Descriptor_Group_Builder, pool_fla
     }
 
     vk_check(vk.CreateDescriptorPool(
-        get_vk_state().device,
+        get_device(),
         &pool_info, nil, &group.pool,
     )) or_return
 
@@ -327,13 +327,11 @@ Descriptor_Write :: union {
 
 Descriptor_Writer :: struct {
     writes: [dynamic]Descriptor_Write,
-    current: int,
 }
 
 create_descriptor_writer :: proc() -> Descriptor_Writer {
     return {
         writes = make([dynamic]Descriptor_Write),
-        current = -1,
     }
 }
 
@@ -350,45 +348,46 @@ descriptor_writer_reset :: proc(self: ^Descriptor_Writer) {
         }
     }
     clear(&self.writes)
-    self.current = -1
 }
 
-// Add a multi image write that can be written to with append_write
+// Add a multi image write that can be written to with append_write_info
 descriptor_writer_add_images_write :: proc(self: ^Descriptor_Writer, type: vk.DescriptorType) {
     append(&self.writes, Descriptor_Write_Images {
         type = type,
         images = make([dynamic]vk.DescriptorImageInfo),
     })
-    self.current += 1
 }
 
-// Add a multi buffer write that can be written to with append_write
+// Add a multi buffer write that can be written to with append_write_info
 descriptor_writer_add_buffers_write :: proc(self: ^Descriptor_Writer, type: vk.DescriptorType) {
     append(&self.writes, Descriptor_Write_Buffers {
         type = type,
         buffers = make([dynamic]vk.DescriptorBufferInfo),
     })
-    self.current += 1
 }
 
-descriptor_writer_append_write :: proc{
-    descriptor_writer_append_image_write,
-    descriptor_writer_append_buffer_write,
+descriptor_writer_append_write_info :: proc{
+    descriptor_writer_append_image_write_info,
+    descriptor_writer_append_buffer_write_info,
 }
 
 // Append image info to current images write
-descriptor_writer_append_image_write :: proc(self: ^Descriptor_Writer, image: vk.DescriptorImageInfo) {
-    assert(self.current >= 0, "No active write - call add_images_write first")
-    write, ok := self.writes[self.current].(Descriptor_Write_Images)
+descriptor_writer_append_image_write_info :: proc(self: ^Descriptor_Writer, image: vk.DescriptorImageInfo) {
+    current := len(self.writes)-1
+
+    assert(current >= 0, "No active write - call add_images_write first")
+    write, ok := self.writes[current].(Descriptor_Write_Images)
     assert(ok, "Active write is not the correct type - call add_images_write first")
 
     append(&write.images, image)
 }
 
 // Append buffer info to current buffers write
-descriptor_writer_append_buffer_write :: proc(self: ^Descriptor_Writer, buffer: vk.DescriptorBufferInfo) {
-    assert(self.current >= 0, "No active write - call add_buffers_write first")
-    write, ok := self.writes[self.current].(Descriptor_Write_Buffers)
+descriptor_writer_append_buffer_write_info :: proc(self: ^Descriptor_Writer, buffer: vk.DescriptorBufferInfo) {
+    current := len(self.writes)-1
+
+    assert(current >= 0, "No active write - call add_buffers_write first")
+    write, ok := self.writes[current].(Descriptor_Write_Buffers)
     assert(ok, "Active write is not the correct type - call add_buffers_write first")
     
     append(&write.buffers, buffer)
@@ -399,7 +398,6 @@ descriptor_writer_add_single_image_write :: proc(self: ^Descriptor_Writer, type:
         type = type,
         image = image,
     })
-    self.current += 1
 }
 
 descriptor_writer_add_single_buffer_write :: proc(self: ^Descriptor_Writer, type: vk.DescriptorType, buffer: vk.DescriptorBufferInfo) {
@@ -407,7 +405,6 @@ descriptor_writer_add_single_buffer_write :: proc(self: ^Descriptor_Writer, type
         type = type,
         buffer = buffer,
     })
-    self.current += 1
 }
 
 // Applies queued writes to a set. dstBinding is in the order of writes
@@ -440,5 +437,154 @@ descriptor_writer_write_set :: proc(self: ^Descriptor_Writer, set: vk.Descriptor
         }
     }
 
-    vk.UpdateDescriptorSets(get_vk_state().device, u32(len(write_infos)), raw_data(write_infos[:]), 0, nil)
+    vk.UpdateDescriptorSets(get_device(), u32(len(write_infos)), raw_data(write_infos[:]), 0, nil)
+}
+
+/*
+    Shader Module
+*/
+create_shader_module :: proc{
+    create_shader_module_code,
+    create_shader_module_file,
+}
+
+create_shader_module_code :: proc(code: []byte) -> (module: vk.ShaderModule, ok: bool) {
+    info := vk.ShaderModuleCreateInfo {
+        sType = .SHADER_MODULE_CREATE_INFO,
+        codeSize = len(code),
+        pCode = cast(^u32)raw_data(code), 
+    }
+
+    vk_check(
+        vk.CreateShaderModule(
+            get_device(),
+            &info, nil, &module,
+        )
+    ) or_return
+
+    return module, true
+}
+
+create_shader_module_file :: proc(path: string) -> (module: vk.ShaderModule, ok: bool) {
+    code := os.read_entire_file(path) or_return
+    defer delete(code)
+
+    return create_shader_module_code(code)
+}
+
+
+/*
+    Pipelines
+*/
+
+Pipeline :: struct {
+    pipeline: vk.Pipeline,
+    layout:   vk.PipelineLayout,
+}
+
+destroy_pipeline :: proc(self: Pipeline) {
+    vk.DestroyPipeline(get_device(), self.pipeline, nil)
+    vk.DestroyPipelineLayout(get_device(), self.layout, nil)
+}
+
+create_pipeline_layout :: proc(descriptor_layouts: []vk.DescriptorSetLayout, push_constants: []vk.PushConstantRange) -> (
+    layout: vk.PipelineLayout,
+    ok: bool,
+) {
+    info := vk.PipelineLayoutCreateInfo {
+        sType = .PIPELINE_LAYOUT_CREATE_INFO,
+        setLayoutCount = u32(len(descriptor_layouts)),
+        pSetLayouts = raw_data(descriptor_layouts[:]),
+        pushConstantRangeCount = u32(len(push_constants)),
+        pPushConstantRanges = raw_data(push_constants[:]),
+    }
+
+    vk_check(vk.CreatePipelineLayout(
+        get_device(),
+        &info, nil, &layout,
+    )) or_return
+
+    return layout, true
+}
+
+Compute_Pipeline_Builder :: struct {
+    descriptor_layouts: [dynamic]vk.DescriptorSetLayout,
+    push_constant_ranges: [dynamic]vk.PushConstantRange,
+    code: []byte,
+    delete_code: bool,
+}
+
+create_compute_pipeline_builder :: proc() -> Compute_Pipeline_Builder {
+    return {
+        descriptor_layouts = make([dynamic]vk.DescriptorSetLayout),
+        push_constant_ranges = make([dynamic]vk.PushConstantRange),
+        delete_code = false,
+    }
+}
+
+destroy_compute_pipeline_builder :: proc(self: Compute_Pipeline_Builder) {
+    delete(self.descriptor_layouts)
+    delete(self.push_constant_ranges)
+    if self.delete_code { delete(self.code) }
+}
+
+compute_pipeline_builder_add_descriptor_layout :: proc(self: ^Compute_Pipeline_Builder, layout: vk.DescriptorSetLayout) {
+    append(&self.descriptor_layouts, layout)
+}
+
+compute_pipeline_builder_add_push_constant_range :: proc(self: ^Compute_Pipeline_Builder, range: vk.PushConstantRange) {
+    append(&self.push_constant_ranges, range)
+}
+
+compute_pipeline_builder_set_shader_module :: proc{
+    compute_pipeline_builder_set_shader_module_code,
+    compute_pipeline_builder_set_shader_module_code_from_file,
+}
+
+compute_pipeline_builder_set_shader_module_code :: proc(self: ^Compute_Pipeline_Builder, code: []byte) {
+    self.code = code
+}
+
+compute_pipeline_builder_set_shader_module_code_from_file :: proc(self: ^Compute_Pipeline_Builder, path: string) {
+    ok: bool
+    self.code, ok = os.read_entire_file(path)
+    if !ok {
+        log.warnf("failed to open %s, to populate shader module code in compute pipeline builder", path)
+        return
+    }
+    self.delete_code = true
+}
+
+compute_pipeline_builder_build :: proc(self: ^Compute_Pipeline_Builder, entry: cstring = "main", flags := vk.PipelineCreateFlags {}) -> (
+    pipeline: Pipeline,
+    ok: bool,
+) {
+    assert(len(self.code) > 0, "Compute Pipeline shader module code not specified - make sure to call compute_pipeline_builder_set_shader_module")
+    module := create_shader_module(self.code) or_return
+    defer vk.DestroyShaderModule(get_device(), module, nil)
+
+    pipeline.layout = create_pipeline_layout(
+        self.descriptor_layouts[:],
+        self.push_constant_ranges[:],
+    ) or_return
+
+    stage_info := vk.PipelineShaderStageCreateInfo {
+        sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+        stage = { .COMPUTE },
+        module = module,
+        pName = entry,
+    }
+
+    info := vk.ComputePipelineCreateInfo {
+        sType = .COMPUTE_PIPELINE_CREATE_INFO,
+        stage = stage_info,
+        layout = pipeline.layout,
+    }
+
+    vk_check(vk.CreateComputePipelines(
+        get_device(), 0,
+        1, &info, nil, &pipeline.pipeline,
+    )) or_return
+
+    return pipeline, true
 }

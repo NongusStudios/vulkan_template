@@ -13,6 +13,7 @@ App :: struct {
     window:   ^sdl.Window,
     running:   bool,
     
+    gradient_compute: Pipeline,
     gradient_group: Descriptor_Group,
 }
 
@@ -38,28 +39,35 @@ init_app :: proc() -> (ok: bool) {
         return false
     }
 
-    self.window = sdl.CreateWindow(TITLE, WIDTH, HEIGHT, {.VULKAN})
+    self.window = sdl.CreateWindow(TITLE, WIDTH, HEIGHT, {.VULKAN, .RESIZABLE})
     if self.window == nil {
         log.errorf("failed to create a window:\n%s", sdl.GetError())
         return false
     }
     
     init_vulkan() or_return
-    state := get_vk_state()
 
-    // Demo Code
+    // Build Descriptor Group
     desc_builder := create_descriptor_group_builder(); defer destroy_descriptor_group_builder(desc_builder)
     descriptor_group_builder_add_set(&desc_builder)
     descriptor_group_builder_add_binding(&desc_builder, .STORAGE_IMAGE, {.COMPUTE})
     self.gradient_group = descriptor_group_builder_build(&desc_builder) or_return
     track_resource(self.gradient_group)
 
+    // Write descriptor set
     writer := create_descriptor_writer(); defer destroy_descriptor_writer(&writer)
     descriptor_writer_add_single_image_write(&writer, .STORAGE_IMAGE, {
-        imageView = state.viewport.color_attachment.view,
+        imageView = get_viewport().color_attachment.view,
         imageLayout = .GENERAL,
     })
     descriptor_writer_write_set(&writer, self.gradient_group.sets[0])
+
+    // Build compute pipeline
+    compute_builder := create_compute_pipeline_builder(); defer destroy_compute_pipeline_builder(compute_builder)
+    compute_pipeline_builder_add_descriptor_layout(&compute_builder, self.gradient_group.layouts[0])
+    compute_pipeline_builder_set_shader_module(&compute_builder, "shaders/gradient.comp.spv")
+    self.gradient_compute = compute_pipeline_builder_build(&compute_builder) or_return
+    track_resource(self.gradient_compute)
 
     self.running = true
     return true
@@ -94,6 +102,30 @@ app_run :: proc() {
         }
 
         if frame, ok := start_frame(&clear_value); ok {
+            cmd := frame.command_buffer
+
+            vk.CmdBindPipeline(cmd, .COMPUTE, self.gradient_compute.pipeline)
+
+            // Bind the descriptor set containing the draw image for the compute pipeline
+            vk.CmdBindDescriptorSets(
+                cmd,
+                .COMPUTE,
+                self.gradient_compute.layout,
+                0,
+                1,
+                &self.gradient_group.sets[0],
+                0,
+                nil,
+            )
+
+            // Execute the compute pipeline dispatch. We are using 16x16 workgroup size so
+            // we need to divide by it
+            vk.CmdDispatch(
+                cmd,
+                get_window_extent().width  / 16,
+                get_window_extent().height / 16,
+                1,
+            )
             end_frame(frame)
         }
     }
