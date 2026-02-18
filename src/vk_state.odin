@@ -55,12 +55,6 @@ Frame_Data :: struct {
     resource_tracker: Resource_Tracker,
 }
 
-Viewport ::struct {
-    color_attachment: Image,
-    //depth_attachment: Image,
-    extent: vk.Extent2D,
-}
-
 Vk_State :: struct {
     instance:        vk.Instance,
     surface:         vk.SurfaceKHR,
@@ -74,9 +68,6 @@ Vk_State :: struct {
     frames:    [FRAME_OVERLAP]Frame_Data,
     current_frame: u32,
     
-    // Each frame is drawn onto this before being copied to the current swapchain image
-    viewport: Viewport,
-
     vkb: struct {
         instance:        ^vkb.Instance,
         physical_device: ^vkb.Physical_Device,
@@ -104,8 +95,8 @@ get_device :: proc() -> vk.Device {
     return self.device
 }
 
-get_viewport :: proc() -> ^Viewport {
-    return &self.viewport
+get_swapchain :: proc() -> ^Swapchain {
+    return &self.swapchain
 }
 
 get_current_frame :: #force_inline proc() -> ^Frame_Data #no_bounds_check {
@@ -117,7 +108,7 @@ track_resource :: proc(res: Resource) {
     resource_tracker_push(&self.global_resource_tracker, res)
 }
 
-start_frame :: proc(clear_color: ^vk.ClearColorValue) -> (frame: ^Frame_Data, ok: bool) {
+start_frame :: proc() -> (frame: ^Frame_Data, ok: bool) {
     frame = get_current_frame()
 
     vk_check(vk.WaitForFences(self.device, 1, &frame.render_fence, true, 1e9)) or_return
@@ -149,51 +140,11 @@ start_frame :: proc(clear_color: ^vk.ClearColorValue) -> (frame: ^Frame_Data, ok
     begin_info := command_buffer_begin_info()
     vk_check(vk.BeginCommandBuffer(cmd, &begin_info)) or_return 
 
-    cmd_transition_image(
-        cmd,
-        self.viewport.color_attachment.image,
-        .UNDEFINED,
-        .GENERAL
-    )
-
-    // Clear current swapchain image
-    clear_range := image_subresource_range({.COLOR})
-    vk.CmdClearColorImage(
-        cmd,
-        self.viewport.color_attachment.image,
-        .GENERAL,
-        clear_color,
-        1,
-        &clear_range,
-    )
-
     return frame, true
 }
 
 present_frame :: proc(frame: ^Frame_Data) {
     cmd := frame.command_buffer  
-
-    cmd_transition_image(
-        cmd,
-        self.viewport.color_attachment.image,
-        .GENERAL,
-        .TRANSFER_SRC_OPTIMAL,
-    )
-
-    cmd_transition_image(
-        cmd,
-        self.swapchain.images[frame.image_index],
-        .UNDEFINED, // old
-        .TRANSFER_DST_OPTIMAL,   // new
-    )
-
-    cmd_copy_image(cmd,
-        self.viewport.color_attachment.image,
-        self.swapchain.images[frame.image_index],
-        self.viewport.extent,
-        self.swapchain.extent,
-        {.COLOR}
-    )
 
     // TODO: Draw imgui ontop of swapchain image
 
@@ -201,8 +152,8 @@ present_frame :: proc(frame: ^Frame_Data) {
     cmd_transition_image(
         cmd,
         self.swapchain.images[frame.image_index],
-        .TRANSFER_DST_OPTIMAL,         // old
-        .PRESENT_SRC_KHR, // new
+        .UNDEFINED, // old
+        .PRESENT_SRC_KHR,      // new
     )
 
 
@@ -408,71 +359,15 @@ init_vulkan :: proc() -> (ok: bool) {
     track_resource(self.one_time_fence)
 
     // Create swapchain and frame data
-    init_swapchain() or_return
+    create_swapchain(get_window_extent()) or_return
     create_frame_data() or_return
-
-    return true
-}
-
-init_swapchain :: proc() -> (ok: bool) {
-    extent := get_window_extent()
-    create_swapchain(extent) or_return
-    
-    display_count: i32 = 0
-    display_ids := sdl.GetDisplays(&display_count)
-    
-    // Get dimension of largest display
-    bounds: sdl.Rect
-    max_w: i32 = 0
-    max_h: i32 = 0
-    for i in 0..<display_count {
-        sdl.GetDisplayBounds(display_ids[i], &bounds)
-        
-        if bounds.w > max_w {
-            max_w = bounds.w
-        }
-
-        if bounds.h > max_h {
-            max_h = bounds.h
-        }
-    }
-
-    // Setup viewport
-    // viewport images share the same size as the largest monitor on the users computer, so it doesn't need
-    // to be recreated when the window is resized.
-    self.viewport.color_attachment = create_image(
-        .R16G16B16A16_SFLOAT,
-        {
-            width = u32(max_w),
-            height = u32(max_h),
-            depth = 1
-        },
-        {
-            .TRANSFER_SRC,
-            .TRANSFER_DST,
-            .STORAGE,
-            .COLOR_ATTACHMENT,
-        },
-        .D2, {.COLOR},
-        allocation_create_info(.Gpu_Only, { .DEVICE_LOCAL })
-    ) or_return
-    track_resource(self.viewport.color_attachment)
-
-    self.viewport.extent = extent
 
     return true
 }
 
 resize_swapchain :: proc() -> (ok: bool) {
     vk_check(vk.DeviceWaitIdle(self.device)) or_return
-
-    new_extent := get_window_extent()
-
-    self.viewport.extent = new_extent
-    self.viewport.extent.width = min(self.viewport.extent.width, self.viewport.color_attachment.extent.width)
-    self.viewport.extent.height = min(self.viewport.extent.height, self.viewport.color_attachment.extent.height)
-
-    create_swapchain(new_extent) or_return
+    create_swapchain(get_window_extent()) or_return
 
     return true
 }

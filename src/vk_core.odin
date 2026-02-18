@@ -466,7 +466,12 @@ create_shader_module_code :: proc(code: []byte) -> (module: vk.ShaderModule, ok:
 }
 
 create_shader_module_file :: proc(path: string) -> (module: vk.ShaderModule, ok: bool) {
-    code := os.read_entire_file(path) or_return
+    code, err := os.read_entire_file(path, context.allocator)
+    if err != nil {
+        log.errorf("failed to open %s:\n[os.Error]: %#v", err)
+        return module, false
+    }
+
     defer delete(code)
 
     return create_shader_module_code(code)
@@ -549,9 +554,9 @@ compute_pipeline_builder_set_shader_module_code :: proc(self: ^Compute_Pipeline_
 }
 
 compute_pipeline_builder_set_shader_module_code_from_file :: proc(self: ^Compute_Pipeline_Builder, path: string) {
-    ok: bool
-    self.code, ok = os.read_entire_file(path)
-    if !ok {
+    err: os.Error
+    self.code, err = os.read_entire_file(path, context.allocator)
+    if err != nil {
         log.warnf("failed to open %s, to populate shader module code in compute pipeline builder", path)
         return
     }

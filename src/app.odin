@@ -1,5 +1,6 @@
 package main
 
+import "vendor:stb/rect_pack"
 import "core:math"
 import "core:log"
 import sdl "vendor:sdl3"
@@ -14,6 +15,9 @@ App :: struct {
     running:   bool,
     minimized: bool,
     
+    draw_image: Image,
+    draw_extent: vk.Extent2D,
+
     gradient_compute: Pipeline,
     gradient_group: Descriptor_Group,
 }
@@ -48,6 +52,49 @@ init_app :: proc() -> (ok: bool) {
     
     init_vulkan() or_return
 
+    // Create viewport
+    display_count: i32 = 0
+    display_ids := sdl.GetDisplays(&display_count)
+    
+    // Get dimension of largest display
+    bounds: sdl.Rect
+    max_w: i32 = 0
+    max_h: i32 = 0
+    for i in 0..<display_count {
+        sdl.GetDisplayBounds(display_ids[i], &bounds)
+        
+        if bounds.w > max_w {
+            max_w = bounds.w
+        }
+
+        if bounds.h > max_h {
+            max_h = bounds.h
+        }
+    }
+
+    // Setup viewport
+    // viewport images share the same size as the largest monitor on the users computer, so it doesn't need
+    // to be recreated when the window is resized.
+    self.draw_image = create_image(
+        .R16G16B16A16_SFLOAT,
+        {
+            width = u32(max_w),
+            height = u32(max_h),
+            depth = 1
+        },
+        {
+            .TRANSFER_SRC,
+            .TRANSFER_DST,
+            .STORAGE,
+            .COLOR_ATTACHMENT,
+        },
+        .D2, {.COLOR},
+        allocation_create_info(.Gpu_Only, { .DEVICE_LOCAL })
+    ) or_return
+    track_resource(self.draw_image)
+
+    self.draw_extent = get_window_extent()
+
     // Build Descriptor Group
     desc_builder := create_descriptor_group_builder(); defer destroy_descriptor_group_builder(desc_builder)
     descriptor_group_builder_add_set(&desc_builder)
@@ -58,7 +105,7 @@ init_app :: proc() -> (ok: bool) {
     // Write descriptor set
     writer := create_descriptor_writer(); defer destroy_descriptor_writer(&writer)
     descriptor_writer_add_single_image_write(&writer, .STORAGE_IMAGE, {
-        imageView = get_viewport().color_attachment.view,
+        imageView = self.draw_image.view,
         imageLayout = .GENERAL,
     })
     descriptor_writer_write_set(&writer, self.gradient_group.sets[0])
@@ -83,22 +130,30 @@ destroy_app :: proc() {
     free(self)
 }
 
+app_handle_resize :: proc() {
+    resize_swapchain()
+    self.draw_extent = get_window_extent()
+    self.draw_extent.width = min(self.draw_extent.width, self.draw_image.extent.width)
+    self.draw_extent.height = min(self.draw_extent.height, self.draw_image.extent.height)
+}
+
 app_handle_event :: proc(event: sdl.Event) {
     #partial switch event.type {
     case .QUIT: self.running = false
     case .WINDOW_MINIMIZED: self.minimized = true
-    case .WINDOW_RESIZED:   resize_swapchain()
+    case .WINDOW_RESIZED:   app_handle_resize()
     }
 }
 
 app_run :: proc() {
     event: sdl.Event
+    barrier: Pipeline_Barrier
 
     for self.running {
         if self.minimized { // If minimized wait for RESTORED event
             for sdl.WaitEvent(&event) {
                 if event.type == .WINDOW_RESTORED {
-                    resize_swapchain()
+                    app_handle_resize()
                     self.minimized = false
                 }
             }
@@ -108,12 +163,39 @@ app_run :: proc() {
             app_handle_event(event)
         }
         
-        clear_value := vk.ClearColorValue {
-            float32 = {0.0, 0.0, 0.0, 1.0},
-        }
-        
-        if frame, ok := start_frame(&clear_value); ok {
+        if frame, ok := start_frame(); ok {
             cmd := frame.command_buffer
+
+            // Transition to general
+            pipeline_barrier_add_image_barrier(&barrier,
+                {}, {},
+                {.CLEAR}, {.MEMORY_WRITE},
+                .UNDEFINED, .GENERAL,
+                self.draw_image.image,
+                image_subresource_range({.COLOR}),
+            )
+            
+            cmd_pipeline_barrier(cmd, &barrier)
+
+            image_range := image_subresource_range({.COLOR})
+            vk.CmdClearColorImage(cmd,
+                self.draw_image.image,
+                .GENERAL,
+                &vk.ClearColorValue {
+                    float32 = { 0.0, 0.0, 0.0, 1.0, }
+                },
+                1, &image_range,
+            )
+
+            pipeline_barrier_add_image_barrier(&barrier,
+                {.CLEAR},          {.MEMORY_WRITE},
+                {.COMPUTE_SHADER}, {.SHADER_WRITE},
+                .GENERAL, .GENERAL,
+                self.draw_image.image,
+                image_subresource_range({.COLOR}),
+            )
+            
+            cmd_pipeline_barrier(cmd, &barrier)
 
             vk.CmdBindPipeline(cmd, .COMPUTE, self.gradient_compute.pipeline)
 
@@ -133,10 +215,40 @@ app_run :: proc() {
             // we need to divide by it
             vk.CmdDispatch(
                 cmd,
-                u32(math.ceil(f32(get_viewport().extent.width)  / 16.)),
-                u32(math.ceil(f32(get_viewport().extent.height)  / 16.)),
+                u32(math.ceil(f32(self.draw_extent.width)   / 20.0)),
+                u32(math.ceil(f32(self.draw_extent.height)  / 20.0)),
                 1,
             )
+
+            swapchain_image := get_swapchain().images[frame.image_index]
+            swapchain_extent := get_swapchain().extent
+
+            pipeline_barrier_add_image_barrier(&barrier,
+                {.COMPUTE_SHADER}, {.SHADER_WRITE},
+                {.TRANSFER},       {.MEMORY_READ},
+                .GENERAL, .TRANSFER_SRC_OPTIMAL,
+                self.draw_image.image,
+                image_subresource_range({.COLOR})
+            )
+
+            pipeline_barrier_add_image_barrier(&barrier,
+                {}, {},
+                {.TRANSFER}, {.MEMORY_WRITE},
+                .UNDEFINED, .TRANSFER_DST_OPTIMAL,
+                swapchain_image,
+                image_subresource_range({.COLOR})
+            )
+
+            cmd_pipeline_barrier(cmd, &barrier)
+            
+            cmd_copy_image(cmd,
+                self.draw_image.image,
+                swapchain_image,
+                self.draw_extent,
+                swapchain_extent,
+                {.COLOR},
+            )
+
             present_frame(frame)
         }
     }

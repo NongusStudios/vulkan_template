@@ -1,7 +1,7 @@
 RWTexture2D<float4> image;
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(20, 20, 1)]
 void main(
     uint3 dispatchThreadID: SV_DispatchThreadID,
     uint3 groupThreadID: SV_GroupThreadID)

@@ -11,6 +11,30 @@ import vk "vendor:vulkan"
 import vkb "../lib/vkb"
 import vma "../lib/vma"
 
+// Error handling
+@(require_results)
+vk_check :: #force_inline proc(
+    res: vk.Result,
+    message := "Detected Vulkan error",
+    loc := #caller_location,
+) -> bool {
+    if intr.expect(res, vk.Result.SUCCESS) == .SUCCESS {
+        return true
+    }
+    log.errorf("[Vulkan Error] %s: %v", message, res)
+    runtime.print_caller_location(loc)
+    return false
+}
+
+@(require_results)
+check_vkb_error :: #force_inline proc(err: vkb.Error) -> bool {
+    if err != nil {
+        log.errorf("[Vulkan Error]: %#v", err)
+        return false
+    }
+    return true
+}
+
 // Resource Tracker, used for keeping track and deletion of user allocated vulkan resources
 Resource :: union {
     // Cleanup procedures
@@ -128,30 +152,6 @@ resource_tracker_flush :: proc(self: ^Resource_Tracker) {
     }
 
     clear(&self.resources)
-}
-
-// Error handling
-@(require_results)
-vk_check :: #force_inline proc(
-    res: vk.Result,
-    message := "Detected Vulkan error",
-    loc := #caller_location,
-) -> bool {
-    if intr.expect(res, vk.Result.SUCCESS) == .SUCCESS {
-        return true
-    }
-    log.errorf("[Vulkan Error] %s: %v", message, res)
-    runtime.print_caller_location(loc)
-    return false
-}
-
-@(require_results)
-check_vkb_error :: #force_inline proc(err: vkb.Error) -> bool {
-    if err != nil {
-        log.errorf("[Vulkan Error]: %#v", err)
-        return false
-    }
-    return true
 }
 
 // Initialisers
