@@ -275,3 +275,40 @@ allocation_create_info :: proc(
         flags = flags,
     }
 }
+
+rendering_info :: proc(
+	renderExtent: vk.Extent2D,
+	colorAttachment: ^vk.RenderingAttachmentInfo,
+	depthAttachment: ^vk.RenderingAttachmentInfo,
+    stencilAttachment: ^vk.RenderingAttachmentInfo = nil,
+    layerCount := u32(1),
+) -> vk.RenderingInfo {
+	renderInfo := vk.RenderingInfo {
+		sType = .RENDERING_INFO,
+		renderArea = vk.Rect2D{extent = renderExtent},
+		layerCount = layerCount,
+		colorAttachmentCount = 1,
+		pColorAttachments = colorAttachment,
+		pDepthAttachment = depthAttachment,
+        pStencilAttachment = stencilAttachment,
+	}
+	return renderInfo
+}
+
+attachment_info :: proc(
+    view: vk.ImageView,
+    clear: ^vk.ClearValue,
+    layout: vk.ImageLayout,
+) -> vk.RenderingAttachmentInfo {
+    colorAttachment := vk.RenderingAttachmentInfo {
+        sType       = .RENDERING_ATTACHMENT_INFO,
+        imageView   = view,
+        imageLayout = layout,
+        loadOp      = clear != nil ? .CLEAR : .LOAD,
+        storeOp     = .STORE,
+    }
+    if clear != nil {
+        colorAttachment.clearValue = clear^
+    }
+    return colorAttachment
+}

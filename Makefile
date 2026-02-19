@@ -16,7 +16,7 @@ bin/release:
 build: vma imgui bin/debug $(SPIR_V)
 	odin build src $(DBG_FLAGS)
 
-release: vma imgui bin/release $(SPIR_V)
+release: vma imgui bin/release $(SPIR_V) 
 	odin build src $(FLAGS)
 
 run: build

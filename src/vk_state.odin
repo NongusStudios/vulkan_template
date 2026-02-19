@@ -1,5 +1,6 @@
 package main
 
+import "core:flags"
 import "base:runtime"
 import "core:log"
 
@@ -7,6 +8,10 @@ import sdl "vendor:sdl3"
 import vk  "vendor:vulkan"
 import vkb "../lib/vkb"
 import vma "../lib/vma"
+
+import im     "../lib/imgui"
+import im_sdl "../lib/imgui/imgui_impl_sdl3"
+import im_vk  "../lib/imgui/imgui_impl_vulkan"
 
 PRESENT_MODE  :: vk.PresentModeKHR.FIFO_RELAXED
 FRAME_OVERLAP :: 2
@@ -104,8 +109,20 @@ get_current_frame :: #force_inline proc() -> ^Frame_Data #no_bounds_check {
 }
 
 // Adds resource to the global tracker 
-track_resource :: proc(res: Resource) {
-    resource_tracker_push(&self.global_resource_tracker, res)
+track_resources :: proc(args: ..Resource) {
+    for res in args {
+        resource_tracker_push(&self.global_resource_tracker, res)
+    }
+}
+
+imgui_new_frame :: proc() {
+    im_sdl.new_frame()
+    im_vk.new_frame()
+    im.new_frame()
+}
+
+imgui_process_event :: proc(event: ^sdl.Event) {
+    im_sdl.process_event(event)
 }
 
 start_frame :: proc() -> (frame: ^Frame_Data, ok: bool) {
@@ -143,15 +160,17 @@ start_frame :: proc() -> (frame: ^Frame_Data, ok: bool) {
     return frame, true
 }
 
-present_frame :: proc(frame: ^Frame_Data, previous_swapchain_image_layout: vk.ImageLayout) {
+present_frame :: proc(frame: ^Frame_Data,
+    previous_swapchain_image_stage:  vk.PipelineStageFlags2,
+    previous_swapchain_image_access: vk.AccessFlags2,
+    previous_swapchain_image_layout: vk.ImageLayout
+) {
+    barrier: Pipeline_Barrier
     cmd := frame.command_buffer  
 
-    // TODO: Draw imgui ontop of swapchain image
-
     // Transition current swapchain image into present mode
-    barrier: Pipeline_Barrier
     pipeline_barrier_add_image_barrier(&barrier,
-        {.ALL_COMMANDS}, {},
+        previous_swapchain_image_stage, previous_swapchain_image_access,
         {.ALL_COMMANDS}, {},
         previous_swapchain_image_layout,
         .PRESENT_SRC_KHR,
@@ -190,8 +209,45 @@ present_frame :: proc(frame: ^Frame_Data, previous_swapchain_image_layout: vk.Im
     self.current_frame += 1
 }
 
+draw_imgui_and_present_frame :: proc(frame: ^Frame_Data,
+    previous_swapchain_image_stage:  vk.PipelineStageFlags2,
+    previous_swapchain_image_access: vk.AccessFlags2,
+    previous_swapchain_image_layout: vk.ImageLayout
+) {
+    barrier: Pipeline_Barrier
+    cmd := frame.command_buffer  
+    swapchain_image := self.swapchain.images[frame.image_index]
+    swapchain_view  := self.swapchain.image_views[frame.image_index]
+
+    pipeline_barrier_add_image_barrier(&barrier,
+        previous_swapchain_image_stage, previous_swapchain_image_access,
+        {.ALL_GRAPHICS}, {.SHADER_WRITE},
+        previous_swapchain_image_layout,
+        .COLOR_ATTACHMENT_OPTIMAL,
+        swapchain_image,
+        image_subresource_range({.COLOR}),
+    )
+    cmd_pipeline_barrier(cmd, &barrier)
+
+    color_attachment := attachment_info(
+        swapchain_view,
+        nil,
+        .COLOR_ATTACHMENT_OPTIMAL,
+    )
+
+    render_info := rendering_info(self.swapchain.extent, &color_attachment, nil)
+
+    vk.CmdBeginRendering(cmd, &render_info)
+    im_vk.render_draw_data(im.get_draw_data(), cmd)
+    vk.CmdEndRendering(cmd)
+
+    present_frame(frame,
+        {.ALL_GRAPHICS}, {.SHADER_WRITE},
+        .COLOR_ATTACHMENT_OPTIMAL)
+}
+
 // Initialisation
-init_vulkan :: proc() -> (ok: bool) {
+init_vulkan :: proc(imgui_init := true) -> (ok: bool) {
     // Make the vulkan instance, with basic debug features
     instance_builder := vkb.create_instance_builder()
 
@@ -334,8 +390,6 @@ init_vulkan :: proc() -> (ok: bool) {
         "failed to create vulkan memory allocator",
     ) or_return
 
-    track_resource(self.global_allocator)
-
     // Create global command pool
     transfer_pool_info := vk.CommandPoolCreateInfo {
         sType = .COMMAND_POOL_CREATE_INFO,
@@ -352,15 +406,17 @@ init_vulkan :: proc() -> (ok: bool) {
         )
     ) or_return
 
-    track_resource(self.transfer_command_pool)
-
     // Create one time fence
     one_time_fence_info := fence_create_info()
     vk_check(
         vk.CreateFence(self.device, &one_time_fence_info, nil, &self.one_time_fence)
     ) or_return
 
-    track_resource(self.one_time_fence)
+    track_resources(
+        self.global_allocator,
+        self.transfer_command_pool,
+        self.one_time_fence
+    )
 
     // Create swapchain and frame data
     create_swapchain(get_window_extent()) or_return
@@ -494,13 +550,90 @@ create_frame_data :: proc() -> (ok: bool) {
             ),
         ) or_return
 
-        track_resource(frame.command_pool)
-        track_resource(frame.acquire_next_semaphore)
-        track_resource(frame.render_fence)
+        track_resources(
+            frame.command_pool,
+            frame.acquire_next_semaphore,
+            frame.render_fence,
+        )
     } 
 
     return true
 }
+
+init_imgui :: proc() -> (ok: bool) {
+    im.CHECKVERSION()
+
+    pool_sizes := []vk.DescriptorPoolSize {
+        {.SAMPLER, 1000},
+        {.COMBINED_IMAGE_SAMPLER, 1000},
+        {.SAMPLED_IMAGE, 1000},
+        {.STORAGE_IMAGE, 1000},
+        {.UNIFORM_TEXEL_BUFFER, 1000},
+        {.STORAGE_TEXEL_BUFFER, 1000},
+        {.UNIFORM_BUFFER, 1000},
+        {.STORAGE_BUFFER, 1000},
+        {.UNIFORM_BUFFER_DYNAMIC, 1000},
+        {.STORAGE_BUFFER_DYNAMIC, 1000},
+        {.INPUT_ATTACHMENT, 1000},
+    }
+
+    pool_info := vk.DescriptorPoolCreateInfo {
+        sType         = .DESCRIPTOR_POOL_CREATE_INFO,
+        flags         = {.FREE_DESCRIPTOR_SET},
+        maxSets       = 1000,
+        poolSizeCount = u32(len(pool_sizes)),
+        pPoolSizes    = raw_data(pool_sizes),
+    }
+
+    imgui_pool: vk.DescriptorPool
+    vk_check(vk.CreateDescriptorPool(self.device, &pool_info, nil, &imgui_pool)) or_return
+
+    im.create_context()
+    defer if !ok { im.destroy_context() }
+
+    im_sdl.init_for_vulkan(get_app().window)
+    defer if !ok { im_sdl.shutdown() }
+
+    init_info := im_vk.Init_Info {
+        api_version = self.vkb.instance.api_version,
+        instance = self.instance,
+        physical_device = self.physical_device,
+        device = self.device,
+        queue = self.graphics.queue,
+        descriptor_pool = imgui_pool,
+        min_image_count = 3,
+        image_count = 3,
+        use_dynamic_rendering = true,
+        pipeline_rendering_create_info = {
+            sType = .PIPELINE_RENDERING_CREATE_INFO,
+            colorAttachmentCount = 1,
+            pColorAttachmentFormats = &self.swapchain.format,
+        },
+        msaa_samples = ._1,
+    }
+
+    im_vk.load_functions(
+        self.vkb.instance.api_version,
+        proc "c" (function_name: cstring, user_data: rawptr) -> vk.ProcVoidFunction {
+            state := cast(^Vk_State)user_data
+            return vk.GetInstanceProcAddr(state.instance, function_name)
+        },
+        &self,
+    ) or_return
+
+    im_vk.init(&init_info) or_return
+    defer if !ok { im_vk.shutdown() }
+    
+    track_resources(
+        imgui_pool,
+        im_vk.shutdown,
+        im_sdl.shutdown,
+    )
+
+    return true
+}
+
+
 
 destroy_swapchain :: proc() {
     for present_semaphore in self.swapchain.present_semaphores {

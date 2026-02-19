@@ -1,10 +1,11 @@
 package main
 
-import "vendor:stb/rect_pack"
 import "core:math"
 import "core:log"
 import sdl "vendor:sdl3"
 import vk  "vendor:vulkan"
+
+import im "../lib/imgui"
 
 WIDTH  :: 1600
 HEIGHT :: 900
@@ -51,6 +52,7 @@ init_app :: proc() -> (ok: bool) {
     }
     
     init_vulkan() or_return
+    init_imgui()  or_return
 
     // Create viewport
     display_count: i32 = 0
@@ -91,7 +93,6 @@ init_app :: proc() -> (ok: bool) {
         .D2, {.COLOR},
         allocation_create_info(.Gpu_Only, { .DEVICE_LOCAL })
     ) or_return
-    track_resource(self.draw_image)
 
     self.draw_extent = get_window_extent()
 
@@ -100,7 +101,6 @@ init_app :: proc() -> (ok: bool) {
     descriptor_group_builder_add_set(&desc_builder)
     descriptor_group_builder_add_binding(&desc_builder, .STORAGE_IMAGE, {.COMPUTE})
     self.gradient_group = descriptor_group_builder_build(&desc_builder) or_return
-    track_resource(self.gradient_group)
 
     // Write descriptor set
     writer := create_descriptor_writer(); defer destroy_descriptor_writer(&writer)
@@ -115,7 +115,12 @@ init_app :: proc() -> (ok: bool) {
     compute_pipeline_builder_add_descriptor_layout(&compute_builder, self.gradient_group.layouts[0])
     compute_pipeline_builder_set_shader_module(&compute_builder, "shaders/gradient.comp.spv")
     self.gradient_compute = compute_pipeline_builder_build(&compute_builder) or_return
-    track_resource(self.gradient_compute)
+    
+    track_resources(
+        self.draw_image,
+        self.gradient_group,
+        self.gradient_compute,
+    )
 
     self.running = true
     return true
@@ -145,25 +150,35 @@ app_handle_event :: proc(event: sdl.Event) {
     }
 }
 
+app_wait_if_minimized :: proc() {
+    if self.minimized { // If minimized wait for RESTORED event
+        event: Event
+        for sdl.WaitEvent(&event) {
+            if event.type == .WINDOW_RESTORED {
+                app_handle_resize()
+                self.minimized = false
+            }
+        }
+    }
+}
+
 app_run :: proc() {
     event: sdl.Event
     barrier: Pipeline_Barrier
 
-    for self.running {
-        if self.minimized { // If minimized wait for RESTORED event
-            for sdl.WaitEvent(&event) {
-                if event.type == .WINDOW_RESTORED {
-                    app_handle_resize()
-                    self.minimized = false
-                }
-            }
-        }
-
+    for self.running { 
+        app_wait_if_minimized()
         for sdl.PollEvent(&event) {
+            imgui_process_event(&event)
             app_handle_event(event)
         }
         
         if frame, ok := start_frame(); ok {
+            // ImGui
+            imgui_new_frame()
+            im.show_demo_window()
+            im.render()
+
             cmd := frame.command_buffer
 
             // Transition to general
@@ -224,8 +239,8 @@ app_run :: proc() {
             swapchain_extent := get_swapchain().extent
 
             pipeline_barrier_add_image_barrier(&barrier,
-                {.CLEAR},  {.MEMORY_WRITE},
-                {.COPY},   {.MEMORY_READ},
+                {.COMPUTE_SHADER},  {.MEMORY_WRITE},
+                {.COPY}, {.MEMORY_READ},
                 .GENERAL, .TRANSFER_SRC_OPTIMAL,
                 self.draw_image.image,
                 image_subresource_range({.COLOR})
@@ -249,7 +264,9 @@ app_run :: proc() {
                 {.COLOR},
             )
 
-            present_frame(frame, .TRANSFER_DST_OPTIMAL)
+            draw_imgui_and_present_frame(frame,
+                {.COPY}, {.MEMORY_WRITE},
+                .TRANSFER_DST_OPTIMAL)
         }
     }
 }
