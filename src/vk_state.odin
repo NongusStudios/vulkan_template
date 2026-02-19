@@ -143,7 +143,7 @@ start_frame :: proc() -> (frame: ^Frame_Data, ok: bool) {
     return frame, true
 }
 
-present_frame :: proc(frame: ^Frame_Data) {
+present_frame :: proc(frame: ^Frame_Data, previous_swapchain_image_layout: vk.ImageLayout) {
     cmd := frame.command_buffer  
 
     // TODO: Draw imgui ontop of swapchain image
@@ -151,15 +151,15 @@ present_frame :: proc(frame: ^Frame_Data) {
     // Transition current swapchain image into present mode
     barrier: Pipeline_Barrier
     pipeline_barrier_add_image_barrier(&barrier,
-        {},   {},
-        {},   {.MEMORY_READ},
-        .UNDEFINED, .PRESENT_SRC_KHR,
+        {.ALL_COMMANDS}, {},
+        {.ALL_COMMANDS}, {},
+        previous_swapchain_image_layout,
+        .PRESENT_SRC_KHR,
         self.swapchain.images[frame.image_index],
         image_subresource_range({.COLOR})
     )
 
     cmd_pipeline_barrier(cmd, &barrier)
-
 
     vk.EndCommandBuffer(cmd)
     

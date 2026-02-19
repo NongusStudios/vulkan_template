@@ -168,7 +168,7 @@ app_run :: proc() {
 
             // Transition to general
             pipeline_barrier_add_image_barrier(&barrier,
-                {}, {},
+                {.ALL_COMMANDS}, {},
                 {.CLEAR}, {.MEMORY_WRITE},
                 .UNDEFINED, .GENERAL,
                 self.draw_image.image,
@@ -182,7 +182,7 @@ app_run :: proc() {
                 self.draw_image.image,
                 .GENERAL,
                 &vk.ClearColorValue {
-                    float32 = { 0.0, 0.0, 0.0, 1.0, }
+                    float32 = { 1.0, 0.0, 0.0, 1.0, }
                 },
                 1, &image_range,
             )
@@ -224,16 +224,16 @@ app_run :: proc() {
             swapchain_extent := get_swapchain().extent
 
             pipeline_barrier_add_image_barrier(&barrier,
-                {.COMPUTE_SHADER}, {.SHADER_WRITE},
-                {.TRANSFER},       {.MEMORY_READ},
+                {.CLEAR},  {.MEMORY_WRITE},
+                {.COPY},   {.MEMORY_READ},
                 .GENERAL, .TRANSFER_SRC_OPTIMAL,
                 self.draw_image.image,
                 image_subresource_range({.COLOR})
             )
 
             pipeline_barrier_add_image_barrier(&barrier,
-                {}, {},
-                {.TRANSFER}, {.MEMORY_WRITE},
+                {.ALL_COMMANDS}, {},
+                {.COPY}, {.MEMORY_WRITE},
                 .UNDEFINED, .TRANSFER_DST_OPTIMAL,
                 swapchain_image,
                 image_subresource_range({.COLOR})
@@ -249,7 +249,7 @@ app_run :: proc() {
                 {.COLOR},
             )
 
-            present_frame(frame)
+            present_frame(frame, .TRANSFER_DST_OPTIMAL)
         }
     }
 }
