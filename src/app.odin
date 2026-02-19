@@ -152,7 +152,7 @@ app_handle_event :: proc(event: sdl.Event) {
 
 app_wait_if_minimized :: proc() {
     if self.minimized { // If minimized wait for RESTORED event
-        event: Event
+        event: sdl.Event
         for sdl.WaitEvent(&event) {
             if event.type == .WINDOW_RESTORED {
                 app_handle_resize()
