@@ -61,11 +61,10 @@ destroy_buffer :: proc(self: Buffer) {
 }
 
 /*
-    Writes to a CPU accessible buffer with data. 
+    Writes to a CPU accessible buffer with data. offset is by element not bytes. 
     NOTE: Buffer should have HOST_COHERENT flag or memory will not be flushed
-    SECOND NOTE: Not sure if the offset logic works, will come back to this
 */
-buffer_write :: proc(self: Buffer, data: []$T, offset: int = 0) -> (ok: bool) {
+buffer_write_mapped_memory :: proc(self: Buffer, data: []$T, offset: int = 0) -> (ok: bool) {
     ensure(self.size >= vk.DeviceSize((len(data) + offset) * size_of(T)))
 
     state := get_vk_state()

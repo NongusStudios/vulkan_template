@@ -113,7 +113,8 @@ init_app :: proc() -> (ok: bool) {
 
     staging_buffer := create_staging_buffer(self.vertex_buffer) or_return
     defer destroy_buffer(staging_buffer)
-    buffer_write(staging_buffer, vertices[:])
+
+    buffer_write_mapped_memory(staging_buffer, vertices[:])
     
     onetime_cmd := start_one_time_commands() or_return
     cmd_copy_buffer(onetime_cmd, staging_buffer.buffer, self.vertex_buffer.buffer, 0, self.vertex_buffer.size)
