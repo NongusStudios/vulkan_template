@@ -16,6 +16,9 @@ import im_vk  "../lib/imgui/imgui_impl_vulkan"
 PRESENT_MODE  :: vk.PresentModeKHR.FIFO_RELAXED
 FRAME_OVERLAP :: 2
 
+// Vulkan 1.1 features
+DEVICE_FEATURES_11 :: vk.PhysicalDeviceVulkan11Features {}
+
 // Vulkan 1.2 features
 DEVICE_FEATURES_12 :: vk.PhysicalDeviceVulkan12Features {
     // Allows shaders to directly access buffer memory using GPU addresses
@@ -326,6 +329,7 @@ init_vulkan :: proc(imgui_init := true) -> (ok: bool) {
     defer vkb.destroy_physical_device_selector(selector)
 
     vkb.physical_device_selector_set_minimum_version(selector, vk.API_VERSION_1_3)
+    vkb.physical_device_selector_set_required_features_11(selector, DEVICE_FEATURES_11)
     vkb.physical_device_selector_set_required_features_12(selector, DEVICE_FEATURES_12)
     vkb.physical_device_selector_set_required_features_13(selector, DEVICE_FEATURES_13)
     vkb.physical_device_selector_add_required_extensions(selector, DEVICE_EXTENSIONS)

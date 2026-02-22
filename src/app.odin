@@ -1,6 +1,5 @@
 package main
 
-import "core:math"
 import "core:log"
 import sdl "vendor:sdl3"
 import vk  "vendor:vulkan"
@@ -18,9 +17,9 @@ App :: struct {
     
     draw_image: Image,
     draw_extent: vk.Extent2D,
-
-    gradient_compute: Pipeline,
-    gradient_group: Descriptor_Group,
+    
+    pipeline:      Pipeline,
+    vertex_buffer: Buffer,
 }
 
 @(private="file")
@@ -96,30 +95,50 @@ init_app :: proc() -> (ok: bool) {
 
     self.draw_extent = get_window_extent()
 
-    // Build Descriptor Group
-    desc_builder := create_descriptor_group_builder(); defer destroy_descriptor_group_builder(desc_builder)
-    descriptor_group_builder_add_set(&desc_builder)
-    descriptor_group_builder_add_binding(&desc_builder, .STORAGE_IMAGE, {.COMPUTE})
-    self.gradient_group = descriptor_group_builder_build(&desc_builder) or_return
+    /*
+        Create Buffers
+    */
+    vertices := [?]f32 {
+        // Position - Color
+         0.0, -1.0,    1.0, 0.0, 0.0,
+         1.0,  1.0,    0.0, 1.0, 0.0,
+        -1.0,  1.0,    0.0, 0.0, 1.0,
+    }
 
-    // Write descriptor set
-    writer := create_descriptor_writer(); defer destroy_descriptor_writer(&writer)
-    descriptor_writer_add_single_image_write(&writer, .STORAGE_IMAGE, {
-        imageView = self.draw_image.view,
-        imageLayout = .GENERAL,
-    })
-    descriptor_writer_write_set(&writer, self.gradient_group.sets[0])
+    self.vertex_buffer = create_buffer(
+        len(vertices) * size_of(f32),
+        {.VERTEX_BUFFER, .TRANSFER_DST},
+        allocation_create_info(.Gpu_Only, {.DEVICE_LOCAL})
+    ) or_return
 
-    // Build compute pipeline
-    compute_builder := create_compute_pipeline_builder(); defer destroy_compute_pipeline_builder(compute_builder)
-    compute_pipeline_builder_add_descriptor_layout(&compute_builder, self.gradient_group.layouts[0])
-    compute_pipeline_builder_set_shader_module(&compute_builder, "shaders/gradient.comp.spv")
-    self.gradient_compute = compute_pipeline_builder_build(&compute_builder) or_return
+    staging_buffer := create_staging_buffer(self.vertex_buffer) or_return
+    defer destroy_buffer(staging_buffer)
+    buffer_write(staging_buffer, vertices[:])
     
+    onetime_cmd := start_one_time_commands() or_return
+    cmd_copy_buffer(onetime_cmd, staging_buffer.buffer, self.vertex_buffer.buffer, 0, self.vertex_buffer.size)
+    submit_one_time_commands(&onetime_cmd)
+
+    builder := create_pipeline_builder(); defer destroy_pipeline_builder(&builder)
+
+    pipeline_builder_add_shader_stage(&builder, .VERTEX,   "shaders/vert.spv")
+    pipeline_builder_add_shader_stage(&builder, .FRAGMENT, "shaders/frag.spv")
+
+    pipeline_builder_add_color_attachment(&builder, self.draw_image.format)
+    pipeline_builder_add_blend_attachment_default(&builder)
+
+    pipeline_builder_set_cull_mode(&builder, {.BACK}, .CLOCKWISE)
+
+    pipeline_builder_add_vertex_binding(&builder, size_of(f32) * 5)
+    pipeline_builder_add_vertex_attribute(&builder, .R32G32_SFLOAT, 0)
+    pipeline_builder_add_vertex_attribute(&builder, .R32G32B32_SFLOAT, size_of(f32) * 2)
+
+    self.pipeline = pipeline_builder_build(&builder) or_return
+
     track_resources(
         self.draw_image,
-        self.gradient_group,
-        self.gradient_compute,
+        self.vertex_buffer,
+        self.pipeline,
     )
 
     self.running = true
@@ -172,76 +191,69 @@ app_run :: proc() {
             imgui_process_event(&event)
             app_handle_event(event)
         }
-        
-        if frame, ok := start_frame(); ok {
-            // ImGui
-            imgui_new_frame()
-            im.show_demo_window()
-            im.render()
 
+        // ImGui
+        imgui_new_frame()
+        im.render()
+
+        if frame, ok := start_frame(); ok {
             cmd := frame.command_buffer
 
-            // Transition to general
             pipeline_barrier_add_image_barrier(&barrier,
                 {.ALL_COMMANDS}, {},
-                {.CLEAR}, {.MEMORY_WRITE},
-                .UNDEFINED, .GENERAL,
+                {.VERTEX_SHADER, .FRAGMENT_SHADER}, {.SHADER_WRITE},
+                .UNDEFINED,
+                .COLOR_ATTACHMENT_OPTIMAL,
                 self.draw_image.image,
-                image_subresource_range({.COLOR}),
+                image_subresource_range({.COLOR})
             )
-            
+
             cmd_pipeline_barrier(cmd, &barrier)
 
-            image_range := image_subresource_range({.COLOR})
-            vk.CmdClearColorImage(cmd,
-                self.draw_image.image,
-                .GENERAL,
-                &vk.ClearColorValue {
-                    float32 = { 1.0, 0.0, 0.0, 1.0, }
+            clear := vk.ClearValue {
+                color = { 
+                    float32 = {0.3, 0.3, 0.3, 1.0},
                 },
-                1, &image_range,
-            )
+            }
+            color_attachment := attachment_info(self.draw_image.view, &clear, .COLOR_ATTACHMENT_OPTIMAL)
+            render_info := rendering_info(self.draw_extent, &color_attachment, nil, nil)
 
-            pipeline_barrier_add_image_barrier(&barrier,
-                {.CLEAR},          {.MEMORY_WRITE},
-                {.COMPUTE_SHADER}, {.SHADER_WRITE},
-                .GENERAL, .GENERAL,
-                self.draw_image.image,
-                image_subresource_range({.COLOR}),
-            )
+            vk.CmdBeginRendering(cmd, &render_info)
             
-            cmd_pipeline_barrier(cmd, &barrier)
+            vk.CmdBindPipeline(cmd, .GRAPHICS, self.pipeline.pipeline)
 
-            vk.CmdBindPipeline(cmd, .COMPUTE, self.gradient_compute.pipeline)
+            // Configure Viewport
+            viewport := vk.Viewport {
+                x = 0,
+                y = 0,
+                width = f32(self.draw_extent.width),
+                height = f32(self.draw_extent.height),
+                minDepth = 0.0,
+                maxDepth = 1.0,
+            }
 
-            // Bind the descriptor set containing the draw image for the compute pipeline
-            vk.CmdBindDescriptorSets(
-                cmd,
-                .COMPUTE,
-                self.gradient_compute.layout,
-                0,
-                1,
-                &self.gradient_group.sets[0],
-                0,
-                nil,
-            )
+            vk.CmdSetViewport(cmd, 0, 1, &viewport)
 
-            // Execute the compute pipeline dispatch. We are using 16x16 workgroup size so
-            // we need to divide by it
-            vk.CmdDispatch(
-                cmd,
-                u32(math.ceil(f32(self.draw_extent.width)   / 20.0)),
-                u32(math.ceil(f32(self.draw_extent.height)  / 20.0)),
-                1,
-            )
+            scissor := vk.Rect2D {
+                offset = {x = 0, y = 0},
+                extent = {width = self.draw_extent.width, height = self.draw_extent.height},
+            }
+
+            vk.CmdSetScissor(cmd, 0, 1, &scissor)
+
+            offset: vk.DeviceSize = 0
+            vk.CmdBindVertexBuffers(cmd, 0, 1, &self.vertex_buffer.buffer, &offset)
+            vk.CmdDraw(cmd, 3, 1, 0, 0)
+
+            vk.CmdEndRendering(cmd)
 
             swapchain_image := get_swapchain().images[frame.image_index]
             swapchain_extent := get_swapchain().extent
 
             pipeline_barrier_add_image_barrier(&barrier,
-                {.COMPUTE_SHADER},  {.MEMORY_WRITE},
-                {.COPY}, {.MEMORY_READ},
-                .GENERAL, .TRANSFER_SRC_OPTIMAL,
+                {.VERTEX_SHADER, .FRAGMENT_SHADER}, {.SHADER_WRITE},
+                {.COPY},         {.MEMORY_READ},
+                .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL,
                 self.draw_image.image,
                 image_subresource_range({.COLOR})
             )
