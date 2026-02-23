@@ -12,8 +12,10 @@ import vma "../lib/vma"
 */
 Buffer :: struct {
     buffer:     vk.Buffer,
-    allocation: vma.Allocation,
     size:       vk.DeviceSize,
+
+    allocation: vma.Allocation,
+    allocation_info: vma.Allocation_Info,
 }
 
 create_buffer :: proc(
@@ -36,7 +38,7 @@ create_buffer :: proc(
         vma.create_buffer(
             state.global_allocator,
             info, allocation,
-            &buffer.buffer, &buffer.allocation, nil),
+            &buffer.buffer, &buffer.allocation, &buffer.allocation_info),
     ) or_return
     
     buffer.size = size
@@ -44,11 +46,11 @@ create_buffer :: proc(
     return buffer, true
 }
 
-create_staging_buffer :: proc(dst: Buffer) -> (staging_buffer: Buffer, ok: bool) {
+create_staging_buffer :: proc(size: vk.DeviceSize) -> (staging_buffer: Buffer, ok: bool) {
     staging_buffer = create_buffer(
-        dst.size, 
+        size,
         { .TRANSFER_SRC }, 
-        allocation_info(.Cpu_Only, { .HOST_VISIBLE, .HOST_COHERENT })
+        allocation_info(.Cpu_Only, { .HOST_VISIBLE, .HOST_COHERENT }, {.Mapped})
     ) or_return 
 
     return staging_buffer, true
@@ -60,29 +62,33 @@ destroy_buffer :: proc(self: Buffer) {
 }
 
 /*
-    Writes to a CPU accessible buffer with data. offset is by element not bytes. 
-    NOTE: Buffer should have HOST_COHERENT flag or memory will not be flushed
+    Writes to a CPU accessible buffer with data. offset is bytes. 
+    NOTE: Buffer should have been created with vma flag .Mapped,
+    compatible with buffers created with create_staging_buffer helper.
 */
-buffer_write_mapped_memory :: proc(self: Buffer, data: []$T, offset: int = 0) -> (ok: bool) {
-    assert(self.size >= vk.DeviceSize((len(data) + offset) * size_of(T)))
+buffer_write_mapped_memory :: proc(self: ^Buffer, data: []$T, offset: int = 0) -> (ok: bool) {
+    assert(self.size >= vk.DeviceSize(len(data) * size_of(T) + offset))
 
     state := get_vk_state()
 
-    mapped_memory: rawptr
-    vk_check(
-        vma.map_memory(state.global_allocator, self.allocation, &mapped_memory)
-    ) or_return
+    mapped_memory: rawptr = self.allocation_info.mapped_data
     
     if offset > 0 {
-        dst := mem.ptr_offset((^T)(mapped_memory), offset)
+        dst := uintptr(mapped_memory) + uintptr(offset)
         mem.copy_non_overlapping(rawptr(dst), raw_data(data[:]), len(data) * size_of(T))
     } else {
         mem.copy_non_overlapping(mapped_memory, raw_data(data[:]), len(data) * size_of(T))
     }
 
-    vma.unmap_memory(state.global_allocator, self.allocation)
-    
     return true
+}
+
+buffer_get_device_address :: proc(self: ^Buffer) -> vk.DeviceAddress {
+    buffer_address_info := vk.BufferDeviceAddressInfo {
+        sType = .BUFFER_DEVICE_ADDRESS_INFO,
+        buffer = self.buffer,
+    }
+    return vk.GetBufferDeviceAddress(get_device(), &buffer_address_info)
 }
 
 /*
@@ -94,6 +100,7 @@ Image :: struct {
     extent: vk.Extent3D,
     format: vk.Format,
     allocation: vma.Allocation,
+    allocation_info: vma.Allocation_Info,
 }
 
 Image_Builder :: struct {
@@ -163,7 +170,7 @@ image_builder_set_tiling :: proc(self: ^Image_Builder, tiling: vk.ImageTiling) {
 }
 
 image_builder_set_usage :: proc(self: ^Image_Builder, usage: vk.ImageUsageFlags) {
-    self.image_info.usage = usage
+    self.image_info.usage |= usage
 }
 
 image_builder_set_view_components :: proc(self: ^Image_Builder,
@@ -187,7 +194,7 @@ image_builder_set_view_subresource_range :: proc(self: ^Image_Builder, mask: vk.
 
 image_builder_set_pixels :: proc(self: ^Image_Builder, pixels: []byte) {
     self.pixels = pixels
-    self.image_info.initialLayout = .TRANSFER_DST_OPTIMAL
+    self.image_info.usage |= {.TRANSFER_DST}
 }
 
 image_builder_build :: proc(self: ^Image_Builder,
@@ -203,7 +210,7 @@ image_builder_build :: proc(self: ^Image_Builder,
             self.image_info,
             allocation,
             &image.image, &image.allocation,
-            nil
+            &image.allocation_info,
         )
     ) or_return
     defer if !ok {
@@ -226,9 +233,20 @@ image_builder_build :: proc(self: ^Image_Builder,
         ) or_return
         defer destroy_buffer(buffer)
 
-        buffer_write_mapped_memory(buffer, pixels)
+        buffer_write_mapped_memory(&buffer, pixels)
         
         cmd := start_one_time_commands() or_return
+        barrier: Pipeline_Barrier
+        pipeline_barrier_add_image_barrier(&barrier,
+            {.ALL_COMMANDS}, {},
+            {.ALL_COMMANDS}, {.MEMORY_WRITE},
+            .UNDEFINED,
+            .TRANSFER_DST_OPTIMAL,
+            image.image,
+            image_subresource_range({.COLOR}),
+        )
+        cmd_pipeline_barrier(cmd, &barrier)
+
         cmd_copy_buffer_to_image(cmd, buffer.buffer, image.image, image.extent, image_subresource_layers({.COLOR}))
         // TODO Generate mip maps if levels > 1
         submit_one_time_commands(&cmd)
@@ -576,7 +594,7 @@ descriptor_writer_add_single_buffer_write :: proc(self: ^Descriptor_Writer, type
 }
 
 // Applies queued writes to a set. dstBinding is in the order of writes
-descriptor_writer_write_set :: proc(self: ^Descriptor_Writer, set: vk.DescriptorSet) {
+descriptor_writer_write_set :: proc(self: ^Descriptor_Writer, set: vk.DescriptorSet, reset := true) {
     write_infos := make([]vk.WriteDescriptorSet, len(self.writes)); defer delete(write_infos)
 
     for &write, binding in self.writes {
@@ -606,6 +624,8 @@ descriptor_writer_write_set :: proc(self: ^Descriptor_Writer, set: vk.Descriptor
     }
 
     vk.UpdateDescriptorSets(get_device(), u32(len(write_infos)), raw_data(write_infos[:]), 0, nil)
+
+    if reset { descriptor_writer_reset(self) }
 }
 
 /*
@@ -1007,11 +1027,11 @@ pipeline_builder_set_stencil_attachment_format :: proc(self: ^Pipeline_Builder, 
     self.stencil_attachment_format = format
 }
 
-pipeline_builder_add_descriptor_layout :: proc(self: ^Compute_Pipeline_Builder, layout: vk.DescriptorSetLayout) {
+pipeline_builder_add_descriptor_layout :: proc(self: ^Pipeline_Builder, layout: vk.DescriptorSetLayout) {
     sa.push_back(&self.descriptor_layouts, layout)
 }
 
-pipeline_builder_add_push_constant_range :: proc(self: ^Compute_Pipeline_Builder, range: vk.PushConstantRange) {
+pipeline_builder_add_push_constant_range :: proc(self: ^Pipeline_Builder, range: vk.PushConstantRange) {
     sa.push_back(&self.push_constant_ranges, range)
 }
 

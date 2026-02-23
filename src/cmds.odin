@@ -52,6 +52,8 @@ cmd_copy_image :: proc(
     dst_size: vk.Extent2D,
     src_subresource: vk.ImageSubresourceLayers,
     dst_subresource: vk.ImageSubresourceLayers,
+    src_layout := vk.ImageLayout.TRANSFER_SRC_OPTIMAL,
+    dst_layout := vk.ImageLayout.TRANSFER_DST_OPTIMAL,
 ) {
     blit_region := vk.ImageBlit2 {
         sType = .IMAGE_BLIT_2,
@@ -71,9 +73,9 @@ cmd_copy_image :: proc(
     blit_info := vk.BlitImageInfo2 {
         sType          = .BLIT_IMAGE_INFO_2,
         srcImage       = src,
-        srcImageLayout = .TRANSFER_SRC_OPTIMAL,
+        srcImageLayout = src_layout,
         dstImage       = dst,
-        dstImageLayout = .TRANSFER_DST_OPTIMAL,
+        dstImageLayout = dst_layout,
         filter         = .LINEAR,
         regionCount    = 1,
         pRegions       = &blit_region,
@@ -114,6 +116,7 @@ cmd_copy_buffer_to_image :: proc(
     dst: vk.Image,
     extent: vk.Extent3D,
     image_subresource: vk.ImageSubresourceLayers,
+    dst_layout := vk.ImageLayout.TRANSFER_DST_OPTIMAL,
     src_offset := vk.DeviceSize(0),
     dst_offset := vk.Offset3D{0, 0, 0},
 ) {
@@ -127,7 +130,7 @@ cmd_copy_buffer_to_image :: proc(
 
     info := vk.CopyBufferToImageInfo2 {
         sType = .COPY_BUFFER_TO_IMAGE_INFO_2,
-        dstImageLayout = .TRANSFER_DST_OPTIMAL,
+        dstImageLayout = dst_layout,
         dstImage = dst,
         srcBuffer = src,
         regionCount = 1,

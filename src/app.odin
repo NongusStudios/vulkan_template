@@ -1,10 +1,15 @@
 package main
 
+import "core:image/png"
+import "core:image"
+
 import "core:log"
 import sdl "vendor:sdl3"
 import vk  "vendor:vulkan"
 
 import im "../lib/imgui"
+
+import stb_image "vendor:stb/image"
 
 WIDTH  :: 1600
 HEIGHT :: 900
@@ -20,6 +25,22 @@ App :: struct {
     
     pipeline:      Pipeline,
     vertex_buffer: Buffer,
+    index_buffer:  Buffer,
+
+    descriptor_group: Descriptor_Group,
+    push_constants: Push_Constants,
+
+    texture: Image,
+    sampler: vk.Sampler,
+}
+
+Vertex :: struct {
+    pos: [2]f32,
+    uv:  [2]f32,
+}
+
+Push_Constants :: struct {
+    vertex_buffer: vk.DeviceAddress,
 }
 
 @(private="file")
@@ -90,52 +111,124 @@ init_app :: proc() -> (ok: bool) {
     /*
         Create Buffers
     */
-    vertices := [?]f32 {
-        // Position - Color
-         0.0, -1.0,    1.0, 0.5, 0.25,
-         1.0,  1.0,    0.25, 1.0, 0.5,
-        -1.0,  1.0,    0.5, 0.25, 1.0,
+    vertices := [?]Vertex {
+        { pos = {-1.0, -1.0}, uv = {0.0, 0.0} }, // Top Left
+        { pos = { 1.0, -1.0}, uv = {1.0, 0.0} }, // Top Right
+        { pos = { 1.0,  1.0}, uv = {1.0, 1.0} }, // Bottom Right
+        { pos = {-1.0,  1.0}, uv = {0.0, 1.0} }, // Bottom Left
+    }
+
+    indices := [?]u32 {
+        0, 1, 2,
+        0, 2, 3,
     }
 
     self.vertex_buffer = create_buffer(
-        len(vertices) * size_of(f32),
-        {.VERTEX_BUFFER, .TRANSFER_DST},
+        len(vertices) * size_of(Vertex),
+        {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER, .TRANSFER_DST},
         allocation_info(.Gpu_Only, {.DEVICE_LOCAL})
     ) or_return
 
-    staging_buffer := create_staging_buffer(self.vertex_buffer) or_return
+    self.index_buffer = create_buffer(
+        len(indices) * size_of(u32),
+        {.INDEX_BUFFER, .TRANSFER_DST},
+        allocation_info(.Gpu_Only, {.DEVICE_LOCAL})
+    ) or_return
+
+    staging_buffer := create_staging_buffer(self.vertex_buffer.size + self.index_buffer.size) or_return
     defer destroy_buffer(staging_buffer)
 
-    buffer_write_mapped_memory(staging_buffer, vertices[:])
+    buffer_write_mapped_memory(&staging_buffer, vertices[:])
+    buffer_write_mapped_memory(&staging_buffer, indices[:], len(vertices) * size_of(Vertex)) 
+
+    self.push_constants.vertex_buffer = buffer_get_device_address(&self.vertex_buffer)
+
+    /*
+        Create Descriptors
+    */
+    group_builder := create_descriptor_group_builder(); destroy_descriptor_group_builder(group_builder)
+    descriptor_group_builder_add_set(&group_builder)
     
+    // set 0, binding 0
+    descriptor_group_builder_add_binding(&group_builder, .COMBINED_IMAGE_SAMPLER, {.FRAGMENT})
+    
+    self.descriptor_group = descriptor_group_builder_build(&group_builder) or_return
+    
+    /*
+        Create Pipleine
+    */
+    module := create_shader_module(#load("../shaders/texture.spv")) or_return
+    defer vk.DestroyShaderModule(get_device(), module, nil)
+
+    pipeline_builder := create_pipeline_builder(); defer destroy_pipeline_builder(&pipeline_builder)
+
+    pipeline_builder_add_shader_stage(&pipeline_builder, .VERTEX,   module, "vertex_main")
+    pipeline_builder_add_shader_stage(&pipeline_builder, .FRAGMENT, module, "fragment_main")
+
+    pipeline_builder_add_color_attachment(&pipeline_builder, self.draw_image.format)
+    pipeline_builder_add_blend_attachment_default(&pipeline_builder)
+
+    pipeline_builder_add_push_constant_range(&pipeline_builder, {
+        stageFlags = {.VERTEX},
+        offset = 0,
+        size   = size_of(Push_Constants),
+    })
+    pipeline_builder_add_descriptor_layout(&pipeline_builder, self.descriptor_group.layouts[0])
+
+    self.pipeline = pipeline_builder_build(&pipeline_builder) or_return
+    
+    /*
+        Create Texture
+    */
+    img, err := image.load_from_file("texture.png", {.alpha_add_if_missing})
+    if err != nil {
+        log.error(err)
+        return false
+    }
+
+    image_builder_reset(&image_builder, .R8G8B8A8_SRGB, u32(img.width), u32(img.height))
+    image_builder_set_pixels(&image_builder, img.pixels.buf[:])
+    image_builder_set_usage(&image_builder, {.SAMPLED})
+    image_builder_build(&image_builder, allocation_info(.Gpu_Only, {.DEVICE_LOCAL}))
+
+    sampler_builder := init_sampler_builder()
+    sampler_builder_set_filter(&sampler_builder, .LINEAR, .LINEAR)
+    self.sampler = sampler_builder_build(&sampler_builder) or_return
+
+    writer := create_descriptor_writer(); defer destroy_descriptor_writer(&writer)
+    descriptor_writer_add_single_image_write(&writer, .COMBINED_IMAGE_SAMPLER, {
+        imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+        imageView   = self.texture.view,
+        sampler     = self.sampler,
+    }) // binding 0 
+    descriptor_writer_write_set(&writer, self.descriptor_group.sets[0])
+
     onetime_cmd := start_one_time_commands() or_return
-    cmd_copy_buffer(onetime_cmd, staging_buffer.buffer, self.vertex_buffer.buffer, self.vertex_buffer.size)
+        cmd_copy_buffer(onetime_cmd, staging_buffer.buffer, self.vertex_buffer.buffer, self.vertex_buffer.size)
+        cmd_copy_buffer(onetime_cmd, staging_buffer.buffer, self.index_buffer.buffer, self.index_buffer.size, self.vertex_buffer.size)
+
+        barrier: Pipeline_Barrier
+        pipeline_barrier_add_image_barrier(&barrier,
+            {.ALL_COMMANDS}, {},
+            {.ALL_COMMANDS}, {.SHADER_SAMPLED_READ},
+            .UNDEFINED,
+            .SHADER_READ_ONLY_OPTIMAL,
+            self.texture.image,
+            image_subresource_range({.COLOR})
+        )
+        cmd_pipeline_barrier(onetime_cmd, &barrier)
     submit_one_time_commands(&onetime_cmd)
-
-    triangle_module := create_shader_module(#load("../shaders/triangle.spv")) or_return
-    defer vk.DestroyShaderModule(get_device(), triangle_module, nil)
-
-    builder := create_pipeline_builder(); defer destroy_pipeline_builder(&builder)
-
-    pipeline_builder_add_shader_stage(&builder, .VERTEX,   triangle_module, "vertexMain")
-    pipeline_builder_add_shader_stage(&builder, .FRAGMENT, triangle_module, "fragmentMain")
-
-    pipeline_builder_add_color_attachment(&builder, self.draw_image.format)
-    pipeline_builder_add_blend_attachment_default(&builder)
-
-    pipeline_builder_set_cull_mode(&builder, {.BACK}, .CLOCKWISE)
-
-    pipeline_builder_add_vertex_binding(&builder, size_of(f32) * 5)
-    pipeline_builder_add_vertex_attribute(&builder, .R32G32_SFLOAT, 0)
-    pipeline_builder_add_vertex_attribute(&builder, .R32G32B32_SFLOAT, size_of(f32) * 2)
-
-    self.pipeline = pipeline_builder_build(&builder) or_return
 
     track_resources(
         self.draw_image,
         self.vertex_buffer,
+        self.index_buffer,
         self.pipeline,
+        self.descriptor_group,
+        self.texture,
+        self.sampler,
     )
+
 
     self.running = true
     return true
@@ -237,9 +330,21 @@ app_run :: proc() {
 
             vk.CmdSetScissor(cmd, 0, 1, &scissor)
 
-            offset: vk.DeviceSize = 0
-            vk.CmdBindVertexBuffers(cmd, 0, 1, &self.vertex_buffer.buffer, &offset)
-            vk.CmdDraw(cmd, 3, 1, 0, 0)
+            vk.CmdBindIndexBuffer(cmd, self.index_buffer.buffer, 0, .UINT32)
+            
+            vk.CmdBindDescriptorSets(cmd,
+                .GRAPHICS,
+                self.pipeline.layout,
+                0, 1, &self.descriptor_group.sets[0],
+                0, nil,
+            )
+
+            vk.CmdPushConstants(cmd,
+                self.pipeline.layout, {.VERTEX},
+                0, size_of(Push_Constants), &self.push_constants,
+            )
+
+            vk.CmdDrawIndexed(cmd, 6, 1, 0, 0, 0)
 
             vk.CmdEndRendering(cmd)
 
