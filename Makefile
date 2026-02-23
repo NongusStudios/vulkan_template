@@ -41,4 +41,4 @@ imgui: lib/imgui/libimgui_linux_x64.a
 
 # Compile Shaders
 shaders/%.spv: shaders/src/%.slang
-	slangc $< -entry main -profile glsl_450 -target spirv -o $@
+	slangc $< -profile glsl_450 -target spirv -o $@

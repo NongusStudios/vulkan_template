@@ -76,23 +76,15 @@ init_app :: proc() -> (ok: bool) {
     // Setup viewport
     // viewport images share the same size as the largest monitor on the users computer, so it doesn't need
     // to be recreated when the window is resized.
-    self.draw_image = create_image(
-        .R16G16B16A16_SFLOAT,
-        {
-            width = u32(max_w),
-            height = u32(max_h),
-            depth = 1
-        },
-        {
-            .TRANSFER_SRC,
-            .TRANSFER_DST,
-            .STORAGE,
-            .COLOR_ATTACHMENT,
-        },
-        .D2, {.COLOR},
-        allocation_create_info(.Gpu_Only, { .DEVICE_LOCAL })
-    ) or_return
+    image_builder := init_image_builder(.R16G16B16A16_SFLOAT, u32(max_w), u32(max_h))
+    image_builder_set_usage(&image_builder, {
+        .TRANSFER_SRC,
+        .TRANSFER_DST,
+        .STORAGE,
+        .COLOR_ATTACHMENT,
+    })
 
+    self.draw_image = image_builder_build(&image_builder, allocation_info(.Gpu_Only, { .DEVICE_LOCAL })) or_return
     self.draw_extent = get_window_extent()
 
     /*
@@ -100,15 +92,15 @@ init_app :: proc() -> (ok: bool) {
     */
     vertices := [?]f32 {
         // Position - Color
-         0.0, -1.0,    1.0, 0.0, 0.0,
-         1.0,  1.0,    0.0, 1.0, 0.0,
-        -1.0,  1.0,    0.0, 0.0, 1.0,
+         0.0, -1.0,    1.0, 0.5, 0.25,
+         1.0,  1.0,    0.25, 1.0, 0.5,
+        -1.0,  1.0,    0.5, 0.25, 1.0,
     }
 
     self.vertex_buffer = create_buffer(
         len(vertices) * size_of(f32),
         {.VERTEX_BUFFER, .TRANSFER_DST},
-        allocation_create_info(.Gpu_Only, {.DEVICE_LOCAL})
+        allocation_info(.Gpu_Only, {.DEVICE_LOCAL})
     ) or_return
 
     staging_buffer := create_staging_buffer(self.vertex_buffer) or_return
@@ -117,13 +109,16 @@ init_app :: proc() -> (ok: bool) {
     buffer_write_mapped_memory(staging_buffer, vertices[:])
     
     onetime_cmd := start_one_time_commands() or_return
-    cmd_copy_buffer(onetime_cmd, staging_buffer.buffer, self.vertex_buffer.buffer, 0, self.vertex_buffer.size)
+    cmd_copy_buffer(onetime_cmd, staging_buffer.buffer, self.vertex_buffer.buffer, self.vertex_buffer.size)
     submit_one_time_commands(&onetime_cmd)
+
+    triangle_module := create_shader_module(#load("../shaders/triangle.spv")) or_return
+    defer vk.DestroyShaderModule(get_device(), triangle_module, nil)
 
     builder := create_pipeline_builder(); defer destroy_pipeline_builder(&builder)
 
-    pipeline_builder_add_shader_stage(&builder, .VERTEX,   "shaders/vert.spv")
-    pipeline_builder_add_shader_stage(&builder, .FRAGMENT, "shaders/frag.spv")
+    pipeline_builder_add_shader_stage(&builder, .VERTEX,   triangle_module, "vertexMain")
+    pipeline_builder_add_shader_stage(&builder, .FRAGMENT, triangle_module, "fragmentMain")
 
     pipeline_builder_add_color_attachment(&builder, self.draw_image.format)
     pipeline_builder_add_blend_attachment_default(&builder)
@@ -274,7 +269,8 @@ app_run :: proc() {
                 swapchain_image,
                 self.draw_extent,
                 swapchain_extent,
-                {.COLOR},
+                image_subresource_layers({.COLOR}),
+                image_subresource_layers({.COLOR}),
             )
 
             draw_imgui_and_present_frame(frame,
