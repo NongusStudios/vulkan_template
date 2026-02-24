@@ -57,8 +57,7 @@ create_staging_buffer :: proc(size: vk.DeviceSize) -> (staging_buffer: Buffer, o
 }
 
 destroy_buffer :: proc(self: Buffer) {
-    state := get_vk_state()
-    vma.destroy_buffer(state.global_allocator, self.buffer, self.allocation)
+    vma.destroy_buffer(get_global_vma_allocator(), self.buffer, self.allocation)
 }
 
 /*
@@ -66,7 +65,7 @@ destroy_buffer :: proc(self: Buffer) {
     NOTE: Buffer should have been created with vma flag .Mapped,
     compatible with buffers created with create_staging_buffer helper.
 */
-buffer_write_mapped_memory :: proc(self: ^Buffer, data: []$T, offset: int = 0) -> (ok: bool) {
+buffer_write_mapped_memory :: proc(self: Buffer, data: []$T, offset: int = 0) {
     assert(self.size >= vk.DeviceSize(len(data) * size_of(T) + offset))
 
     state := get_vk_state()
@@ -79,11 +78,9 @@ buffer_write_mapped_memory :: proc(self: ^Buffer, data: []$T, offset: int = 0) -
     } else {
         mem.copy_non_overlapping(mapped_memory, raw_data(data[:]), len(data) * size_of(T))
     }
-
-    return true
 }
 
-buffer_get_device_address :: proc(self: ^Buffer) -> vk.DeviceAddress {
+buffer_get_device_address :: proc(self: Buffer) -> vk.DeviceAddress {
     buffer_address_info := vk.BufferDeviceAddressInfo {
         sType = .BUFFER_DEVICE_ADDRESS_INFO,
         buffer = self.buffer,
@@ -106,7 +103,6 @@ Image :: struct {
 Image_Builder :: struct {
     image_info: vk.ImageCreateInfo,
     view_info:  vk.ImageViewCreateInfo,
-    pixels: Maybe([]byte),
 }
 
 init_image_builder :: proc(format: vk.Format, width: u32, height: u32, depth: u32 = 1) -> Image_Builder {
@@ -133,8 +129,6 @@ init_image_builder :: proc(format: vk.Format, width: u32, height: u32, depth: u3
         subresourceRange = image_subresource_range({.COLOR}),
     }
 
-    builder.pixels = nil
-
     return builder
 }
 
@@ -149,9 +143,12 @@ image_builder_set_type :: proc(self: ^Image_Builder, image_type: vk.ImageType, v
 }
 
 // Default is 1
-image_builder_generate_mip_map :: proc(self: ^Image_Builder) {
-    assert(self.pixels != nil, "Must set pixels to generate a mip map - call image_builder_set_pixels")
-    self.image_info.mipLevels = u32(math.floor(math.log2(max(f32(self.image_info.extent.width), f32(self.image_info.extent.height))))) + 1
+image_builder_set_mip_levels :: proc(self: ^Image_Builder, levels := u32(0)) {
+    if levels == 0 {
+        self.image_info.mipLevels = u32(math.floor(math.log2(max(f32(self.image_info.extent.width), f32(self.image_info.extent.height))))) + 1
+    } else {
+        self.image_info.mipLevels = levels
+    }
 }
 
 // Default is 1
@@ -192,11 +189,6 @@ image_builder_set_view_subresource_range :: proc(self: ^Image_Builder, mask: vk.
     self.view_info.subresourceRange = image_subresource_range(mask)
 }
 
-image_builder_set_pixels :: proc(self: ^Image_Builder, pixels: []byte) {
-    self.pixels = pixels
-    self.image_info.usage |= {.TRANSFER_DST}
-}
-
 image_builder_build :: proc(self: ^Image_Builder,
     allocation: vma.Allocation_Create_Info,
     image_flags: vk.ImageCreateFlags = {},
@@ -224,33 +216,6 @@ image_builder_build :: proc(self: ^Image_Builder,
     
     image.extent = self.image_info.extent
     image.format = self.image_info.format
-
-    if pixels, maybe := self.pixels.([]byte); maybe {
-        buffer := create_buffer(
-            vk.DeviceSize(len(pixels)),
-            {.TRANSFER_SRC},
-            allocation_info(.Cpu_Only, {.HOST_VISIBLE, .HOST_COHERENT})
-        ) or_return
-        defer destroy_buffer(buffer)
-
-        buffer_write_mapped_memory(&buffer, pixels)
-        
-        cmd := start_one_time_commands() or_return
-        barrier: Pipeline_Barrier
-        pipeline_barrier_add_image_barrier(&barrier,
-            {.ALL_COMMANDS}, {},
-            {.ALL_COMMANDS}, {.MEMORY_WRITE},
-            .UNDEFINED,
-            .TRANSFER_DST_OPTIMAL,
-            image.image,
-            image_subresource_range({.COLOR}),
-        )
-        cmd_pipeline_barrier(cmd, &barrier)
-
-        cmd_copy_buffer_to_image(cmd, buffer.buffer, image.image, image.extent, image_subresource_layers({.COLOR}))
-        // TODO Generate mip maps if levels > 1
-        submit_one_time_commands(&cmd)
-    }
 
     return image, true
 }
