@@ -1,13 +1,8 @@
 package main
 
-import "core:image/png"
-import "core:image"
-
 import "core:log"
 import sdl "vendor:sdl3"
 import vk  "vendor:vulkan"
-
-import im "../lib/imgui"
 
 WIDTH  :: 1600
 HEIGHT :: 900
