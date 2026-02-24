@@ -27,6 +27,7 @@ run: build
 
 clean:
 	rm -r bin
+	rm -r shaders
 	rm -rf lib/vma/build lib/vma/libvma_linux_x86_64.a
 	rm -rf lib/imgui/build lib/imgui/libimgui_linux_x64.a
 
