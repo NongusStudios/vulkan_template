@@ -13,10 +13,13 @@ bin/debug:
 bin/release:
 	mkdir -p bin/release	
 
-build: vma imgui bin/debug $(SPIR_V)
+shaders/src:
+	mkdir -p shaders/src
+
+build: vma imgui shaders/src $(SPIR_V) bin/debug
 	odin build src $(DBG_FLAGS)
 
-release: vma imgui bin/release $(SPIR_V) 
+release: vma imgui shaders/src $(SPIR_V) bin/release
 	odin build src $(FLAGS)
 
 run: build
