@@ -8,7 +8,7 @@ start_one_time_commands :: proc() -> (cmd: vk.CommandBuffer, ok: bool) {
 
     alloc_info := vk.CommandBufferAllocateInfo {
         sType = .COMMAND_BUFFER_ALLOCATE_INFO,
-        commandPool = state.transfer_command_pool,
+        commandPool = state.onetime_command_pool,
         commandBufferCount = 1,
         level = .PRIMARY,
     }
@@ -35,13 +35,13 @@ submit_one_time_commands :: proc(cmd: ^vk.CommandBuffer) {
     cmd_info := command_buffer_submit_info(cmd^)
     submit := submit_info(&cmd_info, nil, nil)
     
-    vk.QueueSubmit2(state.transfer.queue, 1, &submit, state.one_time_fence)
+    vk.QueueSubmit2(state.graphics.queue, 1, &submit, state.one_time_fence)
     
     // Let cpu hang until one time commands are complete
     vk.WaitForFences(state.device, 1, &state.one_time_fence, true, 1e9)
     vk.ResetFences(state.device, 1, &state.one_time_fence)
 
-    vk.FreeCommandBuffers(state.device, state.transfer_command_pool, 1, cmd)
+    vk.FreeCommandBuffers(state.device, state.onetime_command_pool, 1, cmd)
 }
 
 cmd_copy_image :: proc(

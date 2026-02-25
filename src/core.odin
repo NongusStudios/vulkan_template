@@ -364,7 +364,7 @@ destroy_descriptor_group_builder :: proc(self: Descriptor_Group_Builder) {
     delete(self.pool_sizes)
 }
 
-descriptor_group_builder_clear :: proc(self: ^Descriptor_Group_Builder) {
+descriptor_group_builder_reset :: proc(self: ^Descriptor_Group_Builder) {
     self.max_sets = 0
     clear(&self.layout_bindings)
     clear(&self.pool_sizes)

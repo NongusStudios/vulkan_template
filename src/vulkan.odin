@@ -69,7 +69,6 @@ Vk_State :: struct {
     physical_device: vk.PhysicalDevice,
     device:          vk.Device,
     graphics:        Queue,
-    transfer:        Queue,
     
     swapchain:   Swapchain,
 
@@ -84,7 +83,7 @@ Vk_State :: struct {
     },
     
     // Global command pool, created with the TRANSIENT flag, should be only used for one time commands outside the render loop.
-    transfer_command_pool: vk.CommandPool,
+    onetime_command_pool: vk.CommandPool,
     one_time_fence: vk.Fence, // This fence is used to wait for one time commands to finish before continuing.
                               // Note: This is fine because one time commands should only be used at initialisation,
                               // before the render loop.
@@ -372,14 +371,6 @@ init_vulkan :: proc(imgui_init := true) -> (ok: bool) {
     gq.family, err = vkb.device_get_queue_index(self.vkb.device, .Graphics)
     check_vkb_error(err) or_return
 
-    // Get transfer queue
-    tq := &self.transfer
-    tq.queue, err = vkb.device_get_queue(self.vkb.device, .Transfer)
-    check_vkb_error(err) or_return
-
-    tq.family, err = vkb.device_get_queue_index(self.vkb.device, .Transfer)
-    check_vkb_error(err) or_return
-    
     // Create global resource tracker
     self.global_resource_tracker = create_resource_tracker()
     
@@ -402,7 +393,7 @@ init_vulkan :: proc(imgui_init := true) -> (ok: bool) {
     transfer_pool_info := vk.CommandPoolCreateInfo {
         sType = .COMMAND_POOL_CREATE_INFO,
         flags = {.TRANSIENT},
-        queueFamilyIndex = self.transfer.family,
+        queueFamilyIndex = self.graphics.family,
     }
 
     vk_check(
@@ -410,7 +401,7 @@ init_vulkan :: proc(imgui_init := true) -> (ok: bool) {
             self.device,
             &transfer_pool_info,
             nil,
-            &self.transfer_command_pool,
+            &self.onetime_command_pool,
         )
     ) or_return
 
@@ -422,7 +413,7 @@ init_vulkan :: proc(imgui_init := true) -> (ok: bool) {
 
     track_resources(
         self.global_allocator,
-        self.transfer_command_pool,
+        self.onetime_command_pool,
         self.one_time_fence
     )
 
