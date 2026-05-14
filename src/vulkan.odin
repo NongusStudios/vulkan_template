@@ -16,11 +16,18 @@ import im_vk  "../lib/imgui/imgui_impl_vulkan"
 PRESENT_MODE  :: vk.PresentModeKHR.FIFO_RELAXED
 FRAME_OVERLAP :: 2
 
+DEVICE_FEATURES :: vk.PhysicalDeviceFeatures {
+    fillModeNonSolid = true,
+}
+
 // Vulkan 1.1 features
-DEVICE_FEATURES_11 :: vk.PhysicalDeviceVulkan11Features {}
+DEVICE_FEATURES_11 :: vk.PhysicalDeviceVulkan11Features {
+    sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+}
 
 // Vulkan 1.2 features
 DEVICE_FEATURES_12 :: vk.PhysicalDeviceVulkan12Features {
+    sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
     // Allows shaders to directly access buffer memory using GPU addresses
     bufferDeviceAddress = true,
     // Enables dynamic indexing of descriptors and more flexible descriptor usage
@@ -29,6 +36,7 @@ DEVICE_FEATURES_12 :: vk.PhysicalDeviceVulkan12Features {
 
 // Vulkan 1.3 features
 DEVICE_FEATURES_13 :: vk.PhysicalDeviceVulkan13Features {
+    sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
     // Eliminates the need for render pass objects, simplifying rendering setup
     dynamicRendering = true,
     // Provides improved synchronization primitives with simpler usage patterns
@@ -332,6 +340,7 @@ init_vulkan :: proc(imgui_init := true) -> (ok: bool) {
     defer vkb.destroy_physical_device_selector(selector)
 
     vkb.physical_device_selector_set_minimum_version(selector, vk.API_VERSION_1_3)
+    vkb.physical_device_selector_set_required_features(selector, DEVICE_FEATURES)
     vkb.physical_device_selector_set_required_features_11(selector, DEVICE_FEATURES_11)
     vkb.physical_device_selector_set_required_features_12(selector, DEVICE_FEATURES_12)
     vkb.physical_device_selector_set_required_features_13(selector, DEVICE_FEATURES_13)

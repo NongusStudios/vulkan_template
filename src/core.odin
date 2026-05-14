@@ -72,12 +72,8 @@ buffer_write_mapped_memory :: proc(self: Buffer, data: []$T, offset: int = 0) {
 
     mapped_memory: rawptr = self.allocation_info.mapped_data
     
-    if offset > 0 {
-        dst := uintptr(mapped_memory) + uintptr(offset)
-        mem.copy_non_overlapping(rawptr(dst), raw_data(data[:]), len(data) * size_of(T))
-    } else {
-        mem.copy_non_overlapping(mapped_memory, raw_data(data[:]), len(data) * size_of(T))
-    }
+    dst := uintptr(mapped_memory) + uintptr(offset)
+    mem.copy_non_overlapping(rawptr(dst), raw_data(data[:]), len(data) * size_of(T))
 }
 
 buffer_get_device_address :: proc(self: Buffer) -> vk.DeviceAddress {
@@ -981,7 +977,7 @@ pipeline_builder_set_blend_logic_op :: proc(self: ^Pipeline_Builder, op: vk.Logi
     self.logic_op = op
 }
 
-pipeline_builder_add_color_attachment :: proc(self: ^Pipeline_Builder, format: vk.Format) {
+pipeline_builder_add_color_attachment_format :: proc(self: ^Pipeline_Builder, format: vk.Format) {
     assert(sa.len(self.color_attachment_formats) < MAX_PIPELINE_COLOR_ATTACHMENTS, "Reached maximum number of color attachments")
     sa.push_back(&self.color_attachment_formats, format)
 }
