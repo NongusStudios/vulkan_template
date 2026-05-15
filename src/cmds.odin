@@ -140,7 +140,7 @@ cmd_copy_buffer_to_image :: proc(
     vk.CmdCopyBufferToImage2(cmd, &info)
 }
 
-MAX_MEMORY_BARRIERS :: 32
+MAX_MEMORY_BARRIERS :: 16
 Memory_Barriers :: sa.Small_Array(MAX_MEMORY_BARRIERS, vk.MemoryBarrier2)
 Buffer_Barriers :: sa.Small_Array(MAX_MEMORY_BARRIERS, vk.BufferMemoryBarrier2)
 Image_Barriers  :: sa.Small_Array(MAX_MEMORY_BARRIERS, vk.ImageMemoryBarrier2)

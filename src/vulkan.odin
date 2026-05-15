@@ -36,7 +36,7 @@ DEVICE_FEATURES_12 :: vk.PhysicalDeviceVulkan12Features {
 
 // Vulkan 1.3 features
 DEVICE_FEATURES_13 :: vk.PhysicalDeviceVulkan13Features {
-    sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
     // Eliminates the need for render pass objects, simplifying rendering setup
     dynamicRendering = true,
     // Provides improved synchronization primitives with simpler usage patterns
