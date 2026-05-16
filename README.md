@@ -96,7 +96,7 @@ vk_check :: #force_inline proc(
 Checks Vulkan results returning `true` for success. Error results are logged, `false` returned.
 
 #### Create Info Shorthands
-The utility file contains multiple create info functions that help reduce boilerplate by only including the most relevant fields for that create info type. Sets other fields to sane defaults that end up being used the majority of the time anyway. \
+The utility file contains multiple create info functions that help reduce boilerplate by only including the most relevant fields. Sets other fields to sane defaults that are used in the majority of cases. \
 **For Example:**
 ```odin
 image_subresource_range :: proc(aspectMask: vk.ImageAspectFlags) -> vk.ImageSubresourceRange {
@@ -240,7 +240,7 @@ cmd_pipeline_barrier :: proc(cmd: vk.CommandBuffer,
     reset := true
 )
 ```
-Executes the pipeline barrier with `vk.CmdPipelineBarrier2`. By default the `Pipeline_Barrier` is reset afterward, so it can be reused for the next barrier. If you don't want to reset it, change `reset = false`.
+Executes the barriers stored by the `Pipeline_Barrier`. By default the `Pipeline_Barrier` is reset afterward, so it can be reused for the next barrier. If you don't want to reset it, change `reset = false`.
 
 ```odin
 pipeline_barrier_reset :: proc(self: ^Pipeline_Barrier)
@@ -520,7 +520,7 @@ Initialises ImGui backend - call after `init_vulkan`.
 ```odin
 imgui_process_event :: proc(event: ^sdl.Event)
 ```
-Passes the provided sdl event to ImGui sdl backend.
+Passes the provided sdl event to ImGui backend.
 
 ```odin
 imgui_new_frame :: proc()
