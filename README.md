@@ -376,7 +376,7 @@ By default the writer is reset after writing, set `reset = false` to reuse the s
 ```odin
 descriptor_writer_target_set :: proc(self: ^Descriptor_Writer, set: vk.DescriptorSet)
 ```
-Targets the current set for following writes. Must be called before `add_single_image_write`, `add_single_buffer_write` `add_images_write`,  or `add_buffers_write`. Allows for writing to multiple sets with one writer.
+Targets the passed set for following writes. Must be called before `add_single_image_write`, `add_single_buffer_write`, `add_images_write`,  or `add_buffers_write`. Allows for writing to multiple sets with one writer.
 
 ```odin
 descriptor_writer_add_single_image_write :: proc(self: ^Descriptor_Writer, type: vk.DescriptorType, image: vk.DescriptorImageInfo)
