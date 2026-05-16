@@ -30,8 +30,6 @@ DEVICE_FEATURES_12 :: vk.PhysicalDeviceVulkan12Features {
     sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
     // Allows shaders to directly access buffer memory using GPU addresses
     bufferDeviceAddress = true,
-    // Enables dynamic indexing of descriptors and more flexible descriptor usage
-    descriptorIndexing  = true,
 }
 
 // Vulkan 1.3 features

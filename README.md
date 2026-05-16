@@ -35,7 +35,6 @@ Make sure submodules have been cloned before building. You will need the followi
 
 This template uses Vulkan 1.3, and expects usage with multiple device features by default. Required features include:
 - `bufferDeviceAddressing`: allows passing a `vk.DeviceAddress` to a shader to reference a buffer without descriptors.
-- `descriptorIndexing`: allows for more flexible descriptor usage. See [Vulkan Documentation](https://docs.vulkan.org/samples/latest/samples/extensions/descriptor_indexing/README.html)
 - `dynamicRendering`: removes the need for render passes, instead use [`vk.CmdBeginRendering`](https://docs.vulkan.org/spec/latest/chapters/renderpass.html#vkCmdBeginRendering) (Pipeline builder is setup to expect this).
 
 Validation layers are automatically loaded when `ODIN_DEBUG` is set.
@@ -370,9 +369,14 @@ Sets are allocated for you when `descriptor_group_builder_build` is called.
 create_descriptor_writer :: proc() -> Descriptor_Writer
 destroy_descriptor_writer :: proc(self: ^Descriptor_Writer)
 descriptor_writer_reset :: proc(self: ^Descriptor_Writer)
-descriptor_writer_write_set :: proc(self: ^Descriptor_Writer, set: vk.DescriptorSet, reset := true)
+descriptor_writer_write :: proc(self: ^Descriptor_Writer, reset := true)
 ```
 By default the writer is reset after writing, set `reset = false` to reuse the same writes.
+
+```odin
+descriptor_writer_target_set :: proc(self: ^Descriptor_Writer, set: vk.DescriptorSet)
+```
+Targets the current set for following writes. Must be called before `add_single_image_write`, `add_single_buffer_write` `add_images_write`,  or `add_buffers_write`. Allows for writing to multiple sets with one writer.
 
 ```odin
 descriptor_writer_add_single_image_write :: proc(self: ^Descriptor_Writer, type: vk.DescriptorType, image: vk.DescriptorImageInfo)
@@ -391,7 +395,7 @@ descriptor_writer_append_write_info :: proc{
 descriptor_writer_append_image_write_info :: proc(self: ^Descriptor_Writer, image: vk.DescriptorImageInfo)
 descriptor_writer_append_buffer_write_info :: proc(self: ^Descriptor_Writer, buffer: vk.DescriptorBufferInfo)
 ```
-These functions are used to define bindings with multiple descriptors (indexed with an array in the shader). First call `add_images_write` or `add_buffers_write` followed with `append_image_write_info` or `append_buffer_write_info`.
+These functions are used to define bindings with multiple descriptors (indexed with an array in the shader). First call `add_images_write` or `add_buffers_write` followed with `append_image_write_info` or `append_buffer_write_info` to addindividual resource information.
 
 #### Pipelines
 ```odin
